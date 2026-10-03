@@ -19,7 +19,14 @@ from charter_families import FAMILIES, _session, tools_for
 from charter_families.apps import APPS, LOOPBACK_REDIRECT
 from charter_families.connections import Connections
 from charter_families.keychain import FileStore, KeychainStore, open_store
-from charter_families.signin import ConnectTool, SetupPrompt, StatusTool, login, status_text
+from charter_families.signin import (
+    ConnectTool,
+    Loopback,
+    SetupPrompt,
+    StatusTool,
+    login,
+    status_text,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -218,6 +225,24 @@ async def test_a_google_sign_in_completes_through_the_loopback(store, monkeypatc
     assert form["client_secret"] == ["users-own-secret"] and form["code_verifier"]
     stored = json.loads(store.get("google"))
     assert stored["client_id"] == "users-own-client" and stored["refresh_token"] == "r1"
+
+
+async def test_the_loopback_closes_with_the_browser_s_spare_connection_open():
+    # Browsers open a spare connection beside the one the callback comes on and may
+    # never send on it. Closing the listener waited for it, so the login hung after
+    # the callback had been answered; a live Chrome sign-in turned this up.
+    spare = []
+
+    async def sign_in():
+        async with Loopback(port=0) as loopback:
+            port = loopback._server.sockets[0].getsockname()[1]
+            spare.append(await asyncio.open_connection("127.0.0.1", port))
+            _, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"GET /callback?code=c0de&state=s HTTP/1.1\r\nHost: x\r\n\r\n")
+            return await loopback.wait(5)
+
+    assert await asyncio.wait_for(sign_in(), 5) == {"code": "c0de", "state": "s"}
+    assert await spare[0][0].read() == b""  # closed by the listener, not left to the process
 
 
 async def test_google_asks_for_the_user_s_own_client_first(store, monkeypatch, no_google_grant):

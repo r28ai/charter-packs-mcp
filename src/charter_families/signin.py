@@ -73,6 +73,7 @@ class Loopback:
         self.port = port
         self._result: asyncio.Future[Dict[str, str]] = asyncio.get_running_loop().create_future()
         self._server: Optional[asyncio.AbstractServer] = None
+        self._open: Set[asyncio.StreamWriter] = set()
 
     async def __aenter__(self) -> Loopback:
         try:
@@ -87,11 +88,20 @@ class Loopback:
     async def __aexit__(self, *exc: Any) -> None:
         if self._server is not None:
             self._server.close()
+            # A browser opens spare connections beside the one it sends the callback
+            # on, and may never use them. Since 3.12 wait_closed() waits for every
+            # connection, so one left open hung the login; one closed only when the
+            # process exited printed a TypeError from inside asyncio after "Connected".
+            for writer in list(self._open):
+                writer.transport.abort()
             await self._server.wait_closed()
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._open.add(writer)
         try:
             line = (await reader.readline()).decode("latin-1")
+            if not line:  # a spare connection, closed without a request
+                return
             while (await reader.readline()) not in (b"\r\n", b"\n", b""):
                 pass
             parts = line.split(" ")
@@ -115,6 +125,7 @@ class Loopback:
             )
             await writer.drain()
         finally:
+            self._open.discard(writer)
             writer.close()
 
     async def wait(self, timeout: float = 300) -> Dict[str, str]:
