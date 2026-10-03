@@ -36,14 +36,6 @@ dev = [
     "pyright>=1.1.380",
 ]
 
-[tool.uv]
-# Until Charter 0.3.0 is on PyPI, develop against the checkout beside this one,
-# whatever version it reports.
-override-dependencies = ["charter-ai[mcp]"]
-
-[tool.uv.sources]
-charter-ai = { path = "../charter", editable = true }
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/charter_families"]
 

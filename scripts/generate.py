@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: 2026 R28 AI, Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Write one publishable directory per family: a thin package, its README and its server.json.
+"""Write one publishable directory per family: a thin package, its README and its bundle manifest.
 
-Each family ships as its own small package, so it has its own name on PyPI, its
-own repository and its own listing in an MCP directory. That is distribution:
+Each family ships as its own small package in its own GitHub repository, so it
+has its own listing in an MCP directory. That is distribution:
 a directory is searched by the job and the apps, and "GitHub + Linear" finds a
 reader that "Charter" does not. The package itself is a dozen lines that run
 ``charter_families`` with one family name, so the tools, the prompts and their
@@ -15,8 +15,10 @@ Usage::
     uv run python scripts/generate.py                 # ../charter-mcp-families
     uv run python scripts/generate.py --out /some/dir
 
-Nothing is published. Each directory is ready for ``git init``, ``uv build``,
-``uv publish`` and ``mcp-publisher publish`` once ``charter-families`` is on PyPI.
+Nothing is published. Each directory is ready for ``git init`` and a push to
+``github.com/r28ai/<package>``. Nothing here goes to PyPI: a family installs from
+its repository, and depends on ``charter-families`` by its repository too. Only
+Charter itself, and the libraries it needs, come from PyPI.
 """
 
 from __future__ import annotations
@@ -37,22 +39,23 @@ from charter_families.signin import SetupPrompt
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Each family package depends on the engine, and the engine on Charter. Capped
-# at the next minor because pre-1.0 a minor may break the API, and a family
-# package should not be the thing that finds out.
-FAMILIES_REQUIREMENT = "charter-families>=0.1.0,<0.2"
 VERSION = "0.1.0"
 GITHUB_ORG = "r28ai"
-SCHEMA = "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json"
+# Each family package depends on the engine, by its repository and a tag, and
+# the engine on Charter from PyPI. A tag rather than the default branch, so a
+# family installed today keeps working when the engine moves on.
+FAMILIES_REQUIREMENT = (
+    f"charter-families @ git+https://github.com/{GITHUB_ORG}/charter-families@v{VERSION}"
+)
 DOCS = "https://docs.r28.ai/charter"
 
 
 @dataclass(frozen=True)
 class Listing:
-    package: str  # the PyPI name, the repository name and the command
+    package: str  # the repository name and the command
     key: str  # the key a client config names the server under
     title: str
-    tagline: str  # server.json's description, so short
+    tagline: str  # the bundle's description, so short
 
 
 LISTINGS: Dict[str, Listing] = {
@@ -218,7 +221,6 @@ def readme(family: Family, listing: Listing) -> str:
     plain_fields = [(a, f) for a, f in key_fields(family) if not f.secret]
 
     out: List[str] = [
-        f"<!-- mcp-name: io.github.{GITHUB_ORG}/{pkg} -->",
         f"# {listing.title}",
         "",
         listing.tagline,
@@ -228,8 +230,14 @@ def readme(family: Family, listing: Listing) -> str:
         f"{len(tools)} tools it needs and no others.",
         "",
         "```bash",
-        f"claude mcp add {key} -- uvx {pkg}",
+        f"uv tool install git+https://github.com/{GITHUB_ORG}/{pkg}",
+        f"claude mcp add {key} -- {pkg}",
         "```",
+        "",
+        "It installs from this repository with [uv](https://docs.astral.sh/uv/); nothing but "
+        "Charter and the libraries it uses comes from PyPI. `uv tool upgrade " + pkg + "` "
+        "updates it. If a desktop app cannot find `" + pkg + "`, give it the full path "
+        "from `which " + pkg + "`.",
         "",
         f"Then ask your agent to **connect your apps**, or run `/mcp__{key}__setup`.",
         "",
@@ -242,9 +250,9 @@ def readme(family: Family, listing: Listing) -> str:
         "Or connect everything this server uses from a terminal:",
         "",
         "```bash",
-        f"uvx {pkg} login            # each app in turn",
-        f"uvx {pkg} login stripe     # just one",
-        f"uvx {pkg} status           # what is connected",
+        f"{pkg} login            # each app in turn",
+        f"{pkg} login {next((a for a in apps if a.sign_in is None), apps[0]).key:<10} # just one",
+        f"{pkg} status           # what is connected",
         "```",
         "",
         "Tokens and keys go to your operating system's keychain (macOS Keychain, Windows "
@@ -287,8 +295,7 @@ def readme(family: Family, listing: Listing) -> str:
         "servers": {
             key: {
                 "type": "stdio",
-                "command": "uvx",
-                "args": [pkg],
+                "command": pkg,
                 "env": {f.env: "${input:" + _input_id(f) + "}" for _, f in secret_fields}
                 | {f.env: "" for _, f in plain_fields},
             }
@@ -326,20 +333,20 @@ def readme(family: Family, listing: Listing) -> str:
         "**Cursor** (`.cursor/mcp.json`) starts it the same way:",
         "",
         "```json",
-        json.dumps({"mcpServers": {key: {"command": "uvx", "args": [pkg]}}}, indent=2),
+        json.dumps({"mcpServers": {key: {"command": pkg}}}, indent=2),
         "```",
         "",
-        "**Codex** (`~/.codex/config.toml`) starts a turn without waiting for a server's "
-        "tools unless told to, and then the agent has none of them. "
-        '`startup_readiness = "catalog"` makes it wait, and the longer timeout covers the '
-        "first run, when `uvx` installs the package:",
+        "**Codex** (`~/.codex/config.toml`) starts a turn without waiting for a server "
+        "unless it is `required`, and then the agent has none of its tools. "
+        '`required = true` makes the session wait for it, and `startup_readiness = "catalog"` '
+        "waits for its tool list rather than just its connection:",
         "",
         "```toml",
         f"[mcp_servers.{key}]",
-        'command = "uvx"',
-        f'args = ["{pkg}"]',
+        f'command = "{pkg}"',
+        "required = true",
         'startup_readiness = "catalog"',
-        "startup_timeout_sec = 60",
+        "startup_timeout_sec = 30",
         "```",
         "",
         f"Name the server `{key}`. A host builds each tool's name from that key, and "
@@ -426,7 +433,7 @@ def manifest(family: Family, listing: Listing) -> str:
             {
                 "name": "setup",
                 "description": "Connect the apps this server uses.",
-                "text": SetupPrompt(f"uvx {listing.package}").render(),
+                "text": SetupPrompt(listing.package).render(),
             }
         ]
         + [{"name": w.name, "description": w.why, "text": w.render()} for w in family.workflows],
@@ -480,6 +487,10 @@ def pyproject(family: Family, listing: Listing) -> str:
             "[project.scripts]",
             f'{listing.package} = "{module_name(listing)}:main"',
             "",
+            "[tool.hatch.metadata]",
+            "# charter-families is a dependency by its GitHub URL, not a PyPI name.",
+            "allow-direct-references = true",
+            "",
             "[tool.hatch.build.targets.wheel]",
             f'packages = ["src/{module_name(listing)}"]',
             "",
@@ -502,12 +513,12 @@ def package_init(family: Family, listing: Listing) -> str:
             "",
             "",
             "def main(argv: Optional[List[str]] = None) -> int:",
-            '    """`uvx PKG` serves; `uvx PKG login [app]`, `status` and `logout` connect apps."""',
+            '    """`PKG` serves; `PKG login [app]`, `status` and `logout` connect apps."""',
             "    from charter_families import main as run",
             "",
             "    args = sys.argv[1:] if argv is None else argv",
             "    return run(",
-            f'        ["{family.key}", *args, "--name", "{listing.key}", "--command", "uvx {listing.package}"]',
+            f'        ["{family.key}", *args, "--name", "{listing.key}", "--command", "{listing.package}"]',
             "    )",
             "",
         ]
@@ -528,39 +539,6 @@ def package_main(listing: Listing) -> str:
     )
 
 
-def server_json(family: Family, listing: Listing) -> str:
-    env = [
-        {
-            "name": f.env,
-            "description": f"{a.name}: {f.label}. Optional: `{listing.package} login` stores it in the keychain instead.",
-            "isRequired": False,
-            "isSecret": f.secret,
-        }
-        for a, f in key_fields(family)
-    ]
-    doc = {
-        "$schema": SCHEMA,
-        "name": f"io.github.{GITHUB_ORG}/{listing.package}",
-        "title": listing.title,
-        "description": listing.tagline,
-        "version": VERSION,
-        "repository": {
-            "url": f"https://github.com/{GITHUB_ORG}/{listing.package}",
-            "source": "github",
-        },
-        "packages": [
-            {
-                "registryType": "pypi",
-                "identifier": listing.package,
-                "version": VERSION,
-                "transport": {"type": "stdio"},
-                "environmentVariables": env,
-            }
-        ],
-    }
-    return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
-
-
 GITIGNORE = "\n".join(
     ["__pycache__/", "*.pyc", ".venv/", "dist/", "build/", "*.egg-info/", ".env", ""]
 )
@@ -570,7 +548,7 @@ def index() -> str:
     lines = [
         "# Charter MCP families",
         "",
-        "One directory per family, each a repository and a PyPI package of its own.",
+        "One directory per family, each a repository of its own, installed from GitHub.",
         "Generated by `scripts/generate.py` in the charter-families repo; edit the",
         "catalogue there (`src/charter_families/catalogue.py`), not these files.",
         "",
@@ -592,14 +570,16 @@ def index() -> str:
         "",
         "## Publishing one",
         "",
-        "1. Release Charter 0.3.0 (MCP prompts and instructions), then `charter-families`",
-        f"   from its own repo (`{FAMILIES_REQUIREMENT}`).",
-        f"2. `cd <dir> && git init && gh repo create {GITHUB_ORG}/<dir> --public --source . --push`",
-        "3. `uv build && uv publish`",
-        "4. `mcp-publisher login github && mcp-publisher publish` (reads `server.json`; the",
-        "   `mcp-name` comment at the top of the README is what proves the PyPI package is yours)",
+        "Only Charter is on PyPI. Every family installs from its GitHub repository and",
+        "depends on `charter-families` by its repository and tag:",
+        "",
+        "1. Release Charter 0.3.0 to PyPI (MCP prompts and instructions).",
+        f"2. Push `charter-families` to `github.com/{GITHUB_ORG}/charter-families` and tag it",
+        f"   `v{VERSION}`; every family depends on `{FAMILIES_REQUIREMENT}`.",
+        f"3. `cd <dir> && git init && gh repo create {GITHUB_ORG}/<dir> --public --source . --push`",
+        f"4. Check it from a clean machine: `uv tool install git+https://github.com/{GITHUB_ORG}/<dir>`.",
         "5. `npx @anthropic-ai/mcpb pack` and attach the `.mcpb` to a GitHub release, for",
-        "   Claude Desktop. Then submit it to Anthropic's extensions directory.",
+        "   Claude Desktop.",
         "6. Submit the repository to the directories that index by repo: Smithery, Glama,",
         "   PulseMCP, mcp.so, and a PR to awesome-mcp-servers.",
         "",
@@ -619,7 +599,6 @@ def write(out: Path) -> List[Path]:
         files = {
             base / "README.md": readme(family, listing),
             base / "pyproject.toml": pyproject(family, listing),
-            base / "server.json": server_json(family, listing),
             base / ".gitignore": GITIGNORE,
             base / "manifest.json": manifest(family, listing),
             base / "src" / "server.py": server_py(listing),
@@ -629,6 +608,8 @@ def write(out: Path) -> List[Path]:
         for path, text in files.items():
             path.write_text(text)
             written.append(path)
+        # A PyPI registry entry from before families installed from GitHub.
+        (base / "server.json").unlink(missing_ok=True)
         shutil.copyfile(ROOT / "LICENSE", base / "LICENSE")
         written.append(base / "LICENSE")
     (out / "README.md").write_text(index())

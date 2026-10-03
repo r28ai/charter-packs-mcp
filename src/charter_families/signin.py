@@ -6,7 +6,7 @@ Connecting an app: a key for most, a browser sign-in for Google.
 
 Two entry points share everything below:
 
-- ``login`` from a terminal — ``uvx github-linear-mcp login`` connects each app
+- ``login`` from a terminal — ``github-linear-mcp login`` connects each app
   the server uses, in turn. Keys are read with ``getpass``, so they are never
   echoed, logged or sent anywhere but the API that issued them.
 - the ``connect`` tool, which the agent calls. For a key it explains where to

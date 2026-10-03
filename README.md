@@ -10,6 +10,9 @@ workflows as prompts (slash commands in Claude Code) beside exactly the tools th
 Nothing here is part of the Charter SDK. This package is built on it: every tool is a pack
 tool, and the server is Charter's MCP adapter.
 
+Nothing here is on PyPI: a family installs from its own repository, which depends on this
+one by its repository and tag, and only Charter comes from PyPI.
+
 ```bash
 python -m charter_families engineering                 # serve one family over stdio
 python -m charter_families support,finance             # two families, one server
@@ -70,8 +73,10 @@ uv run pyright
 uv run python scripts/generate.py
 ```
 
-Every test runs offline against `respx`. Until Charter 0.3.0 is on PyPI, `uv sync` builds
-against the Charter checkout beside this one (`../charter`).
+Every test runs offline against `respx`. To work against a Charter checkout rather than the
+release, `uv pip install -e ../charter` after `uv sync`. Do not put that path in
+`[tool.uv.sources]`: uv honours it when the package is installed from GitHub, where
+`../charter` does not exist, and every install fails.
 
 ## License
 
