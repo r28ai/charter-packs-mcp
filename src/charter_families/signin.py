@@ -38,6 +38,15 @@ from charter_families.connections import Connections
 
 __all__ = ["ConnectTool", "SetupPrompt", "how_to_connect", "login", "status_text"]
 
+# Google answers a client that does not accept the loopback redirect on its own
+# page, so the callback never comes. A Desktop app client accepts it; a Web
+# application client — common among people who already made one — does not.
+_REDIRECT_HINT = (
+    "If Google says redirect_uri_mismatch, the OAuth client is a Web application: "
+    f"add {LOOPBACK_REDIRECT} to its Authorized redirect URIs, or make a Desktop app "
+    "client instead."
+)
+
 _PAGE = (
     "<!doctype html><meta charset=utf-8><title>Charter</title>"
     "<body style='font:16px system-ui;margin:4em auto;max-width:32em'>"
@@ -104,7 +113,7 @@ class Loopback:
             return await asyncio.wait_for(asyncio.shield(self._result), timeout)
         except asyncio.TimeoutError as exc:
             raise CredentialError(
-                "no answer from the browser within five minutes; start again"
+                f"no answer from the browser within five minutes; start again. {_REDIRECT_HINT}"
             ) from exc
 
 
@@ -181,7 +190,8 @@ async def _google_sign_in(
     request = flow.authorize(scopes)
     async with Loopback() as loopback:
         announce(
-            f"Opening your browser to sign in to {app.name}. If it does not open:\n{request.url}"
+            f"Opening your browser to sign in to {app.name}. {_REDIRECT_HINT}\n"
+            f"If it does not open:\n{request.url}"
         )
         open_browser(request.url)
         params = await loopback.wait()
@@ -419,7 +429,7 @@ class ConnectTool:
         url = opened[0].rsplit("\n", 1)[-1] if opened else ""
         return (
             f"Opened the {app.name} sign-in in the user's browser. Once they approve, "
-            f"{app.name} is connected and its tools work on the next call."
+            f"{app.name} is connected and its tools work on the next call. {_REDIRECT_HINT}"
             + (f" If the browser did not open, the user visits: {url}" if url else "")
         )
 

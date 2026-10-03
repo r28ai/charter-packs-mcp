@@ -47,6 +47,15 @@ def test_a_prompt_names_tools_as_the_server_publishes_them():
     assert workflow.render("repo r28ai/charter").endswith("Context from me: repo r28ai/charter")
 
 
+def test_a_prompt_has_the_agent_connect_missing_apps_before_it_asks_for_anything():
+    """Asked to run a workflow with nothing connected, Claude asked which repo first and
+    only found out GitHub was missing on the call after. And told to name a credential
+    error's variable, it led with GITHUB_TOKEN instead of the login command."""
+    text = FAMILIES["engineering"].workflows[0].render()
+    assert "Before anything else" in text and "not connected" in text
+    assert "variable" not in text
+
+
 def test_a_shared_tool_is_served_once():
     support, finance = FAMILIES["support"], FAMILIES["finance"]
     shared = set(support.steps) & set(finance.steps)

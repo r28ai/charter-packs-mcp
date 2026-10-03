@@ -144,6 +144,21 @@ APP_NAMES = {
 
 GOOGLE = APPS["google"].packs
 
+# What a person would pass as `details` to each family's first workflow, for the README.
+EXAMPLE_DETAILS = {
+    "engineering": "repo acme/api, Linear team ENG, post in #eng-alerts",
+    "product": "this week's customer calls, Linear team PROD",
+    "sales": "tomorrow's calls only, skip internal ones",
+    "marketing": "everything shipped since the 1st",
+    "support": "the support@ inbox, Linear team SUP",
+    "finance": "client Acme, repo acme/site, last week",
+    "commerce": "anything under 10 units, supplier sheet 'POs'",
+    "ops": "post it to #me",
+    "research": "competitors acme.com and globex.com",
+    "people": "the jobs@ inbox, sheet 'Candidates 2026'",
+    "agency": "new client Acme Ltd, $2,000 deposit",
+}
+
 
 def family_apps(family: Family) -> List[App]:
     """The apps a family connects, in the order its workflows first reach them."""
@@ -282,7 +297,12 @@ def readme(family: Family, listing: Listing) -> str:
     out += [
         "",
         "Every prompt takes one optional argument, `details`: the repo, team, channel, "
-        "customer or date range you mean, so the agent does not have to ask.",
+        "customer or date range you mean, so the agent does not have to ask. In Claude "
+        "Code, put it in quotes, or only its first word arrives:",
+        "",
+        "```",
+        f'/mcp__{key}__{family.workflows[0].name} "{EXAMPLE_DETAILS[family.key]}"',
+        "```",
         "",
         "Reads run without asking. Before anything that creates, sends, changes or "
         "deletes, the prompt tells the agent to show you the call and wait.",

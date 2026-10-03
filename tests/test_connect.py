@@ -195,6 +195,8 @@ async def test_a_google_sign_in_completes_through_the_loopback(store, monkeypatc
     tool = ConnectTool(connections, "uvx support-inbox-mcp", open_browser=browser)
     reply = await tool.call({"app": "google"})
     assert "Opened the Google sign-in" in reply
+    # A Web application client gets Google's error page and no callback; say what to do.
+    assert "redirect_uri_mismatch" in reply and LOOPBACK_REDIRECT in reply
     for _ in range(50):
         if connections.state(APPS["google"]) == "connected":
             break

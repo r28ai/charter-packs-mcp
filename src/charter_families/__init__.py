@@ -94,11 +94,14 @@ class Workflow:
         lines += [f"{i}. `{step.replace('.', '_', 1)}`" for i, step in enumerate(self.steps, 1)]
         lines += [
             "",
+            "Before anything else, check whether this server lists any of these tools' "
+            "apps as not connected. If it does, tell me how to connect them first, "
+            "before asking me for anything.",
             "Read before you write. Before any call that creates, sends, changes or "
             "deletes something, show me what it will do and wait for my go-ahead, "
             "unless I have told you to go ahead without asking.",
-            "If a tool fails with a credential error, tell me which variable it names "
-            "and stop there.",
+            "If a tool says its app is not connected, tell me how to connect it, as "
+            "the tool says, and stop there.",
         ]
         if details.strip():
             lines += ["", f"Context from me: {details.strip()}"]
