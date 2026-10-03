@@ -23,16 +23,14 @@ from __future__ import annotations
 import importlib
 import json
 import os
-from datetime import datetime
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence
 
 from charter import CredentialError
-from charter.auth import StaticTokenProvider, TokenGrant
+from charter.auth import StaticTokenProvider
 
 from charter_families.apps import App, app_for_pack
-from charter_families.oauth import PublicClient, RefreshingGrant
 
-__all__ = ["Connections", "grant_record", "public_client"]
+__all__ = ["Connections"]
 
 
 def _module(pack: str) -> Any:
@@ -47,42 +45,6 @@ def _pack_configured(pack: str) -> bool:
         if holder is not None and hasattr(holder, "is_configured"):
             return bool(holder.is_configured)
     return False
-
-
-def public_client(app: App, client_id: str, client_secret: Optional[str] = None) -> PublicClient:
-    sign_in = app.sign_in
-    assert sign_in is not None
-    return PublicClient(
-        authorization_endpoint=sign_in.authorization_endpoint,
-        token_endpoint=sign_in.token_endpoint,
-        client_id=client_id,
-        client_secret=client_secret,
-        scope_param=sign_in.scope_param,
-        scope_separator=sign_in.scope_separator,
-        response_root=sign_in.response_root,
-        authorization_params=dict(sign_in.authorization_params),
-    )
-
-
-def grant_record(client_id: str, grant: TokenGrant) -> Dict[str, Any]:
-    return {
-        "type": "oauth",
-        "client_id": client_id,
-        "access_token": grant.access_token,
-        "refresh_token": grant.refresh_token,
-        "expires_at": grant.expires_at.isoformat() if grant.expires_at else None,
-        "scopes": list(grant.scopes),
-    }
-
-
-def _grant(record: Mapping[str, Any]) -> TokenGrant:
-    expires = record.get("expires_at")
-    return TokenGrant(
-        access_token=record["access_token"],
-        refresh_token=record.get("refresh_token"),
-        expires_at=datetime.fromisoformat(expires) if expires else None,
-        scopes=list(record.get("scopes") or []),
-    )
 
 
 class Connections:
@@ -111,7 +73,6 @@ class Connections:
             if any(_pack_configured(p) for p in app.packs if p in self.packs)
         }
         self._installed: Dict[str, str] = {}
-        self._refreshers: Dict[str, RefreshingGrant] = {}
 
     @property
     def store(self) -> Any:
@@ -159,7 +120,6 @@ class Connections:
     def forget(self, app: App) -> None:
         self.store.delete(app.key)
         self._installed.pop(app.key, None)
-        self._refreshers.pop(app.key, None)
 
     def install(self, app: App, record: Mapping[str, Any]) -> None:
         """Hand ``record`` to every pack ``app`` covers, the way each pack takes credentials."""
@@ -186,42 +146,4 @@ class Connections:
                 }
             )
             return
-        if kind == "oauth":
-            grant = _grant(record)
-            provider: Any
-            if grant.refresh_token and grant.expires_at is not None:
-                client = public_client(app, record["client_id"])
-
-                def persist(
-                    new: TokenGrant, app: App = app, client_id: str = record["client_id"]
-                ) -> None:
-                    raw = json.dumps(grant_record(client_id, new))
-                    self.store.set(app.key, raw)
-                    self._installed[app.key] = raw
-
-                provider = RefreshingGrant(client, grant, on_refresh=persist)
-                self._refreshers[app.key] = provider
-            else:
-                provider = StaticTokenProvider(grant.access_token)
-            for pack in app.packs:
-                module = _module(pack)
-                if app.install == "api_key":
-                    # Linear takes a personal key raw and an OAuth token as Bearer.
-                    module.configure(f"Bearer {grant.access_token}")
-                else:
-                    module.configure(provider)
-            return
         raise CredentialError(f"unrecognised stored credential for {app.name}: {kind!r}")
-
-    async def before_call(self, pack: str) -> None:
-        """Renew a sign-in an API-key pack holds as a static header (Linear's OAuth token)."""
-        try:
-            app = app_for_pack(pack)
-        except KeyError:
-            return
-        refresher = self._refreshers.get(app.key)
-        if refresher is None or app.install != "api_key":
-            return
-        grant = await refresher.current()
-        for p in app.packs:
-            _module(p).configure(f"Bearer {grant.access_token}")

@@ -32,7 +32,7 @@ from typing import Dict, List, Tuple
 from charter import schema_tokens
 
 from charter_families import FAMILIES, Family
-from charter_families.apps import APPS, LOOPBACK_REDIRECT, App, Field, app_for_pack
+from charter_families.apps import APPS, App, Field, app_for_pack
 from charter_families.signin import SetupPrompt
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -156,14 +156,9 @@ def family_apps(family: Family) -> List[App]:
 
 
 def how_it_connects(app: App) -> str:
-    sign_in = app.sign_in
-    if sign_in is None:
-        return "A key, entered once"
-    if sign_in.kind == "google":
-        return "Browser sign-in, with your own Google OAuth client"
-    if sign_in.kind == "device":
-        return "Browser sign-in (enter a code)"
-    return "Browser sign-in"
+    if app.sign_in is None:
+        return f"Your own key ([get one]({app.key_url})), entered once"
+    return f"Browser sign-in, over your own OAuth client ([make one]({app.guide}))"
 
 
 def module_name(listing: Listing) -> str:
@@ -225,10 +220,9 @@ def readme(family: Family, listing: Listing) -> str:
         "",
         "## Connect your apps",
         "",
-        'Ask the agent to connect one ("connect Linear"). Where the app offers a browser '
-        "sign-in, your browser opens, you approve, and the next call works, with no restart. "
-        "Where it only issues keys, the agent tells you where to get one and the command "
-        "that takes it. The agent never asks for a key in the chat.",
+        'Ask the agent to connect one ("connect Linear"). It tells you where to get that '
+        "app's key and the command that stores it, and the next call works, with no restart. "
+        "The agent never asks for a key in the chat.",
         "",
         "Or connect everything this server uses from a terminal:",
         "",
@@ -240,8 +234,9 @@ def readme(family: Family, listing: Listing) -> str:
         "",
         "Tokens and keys go to your operating system's keychain (macOS Keychain, Windows "
         "Credential Manager, the Secret Service on Linux), and are checked with one read-only "
-        "call to the app's own API before they are kept. Nothing passes through a server of "
-        "ours: there isn't one.",
+        "call to the app's own API before they are kept. Every key, token and OAuth client "
+        "is yours: we register no app with any of these services, and nothing passes "
+        "through a server of ours, because there isn't one.",
         "",
         "| App | How it connects | Or set |",
         "|---|---|---|",
@@ -302,7 +297,7 @@ def readme(family: Family, listing: Listing) -> str:
         "asks for any keys in its own settings and keeps them in your keychain.",
         "",
         "**VS Code** (`.vscode/mcp.json`): VS Code asks for each key the first time the "
-        "server starts and stores it securely. Leave out the ones you connect by signing in.",
+        "server starts and stores it securely. Leave out any you stored with `login`.",
         "",
         "```json",
         json.dumps(vscode, indent=2),
@@ -367,8 +362,10 @@ def manifest(family: Family, listing: Listing) -> str:
             "type": "string",
             "title": f"{a.name}: {f.label}",
             "description": (
-                f"Optional. {'Leave empty to sign in instead: ask Claude to connect ' + a.name + '. ' if a.sign_in else ''}"
-                f"Get it at {a.key_url}"
+                f"Optional. Your own OAuth client, made at {a.key_url}; with it set, ask "
+                f"Claude to connect {a.name}."
+                if a.sign_in
+                else f"Optional. Get it at {a.key_url}"
             ),
             "sensitive": f.secret,
             "required": False,
@@ -564,23 +561,8 @@ def index() -> str:
         )
     lines += [
         "",
-        "## Before the first release: three OAuth apps",
-        "",
-        "Linear, Slack and GitHub sign in with a public client ID that R28 registers once.",
-        "A public client has no secret, so the ID ships in the open (RFC 8252). Until one is",
-        "set in `CLIENT_IDS` (`src/charter_families/apps.py`), that app falls back to a key.",
-        "",
-        "| App | Register at | Settings |",
-        "|---|---|---|",
-        "| GitHub | github.com/organizations/r28ai/settings/applications → New OAuth app | Enable Device Flow. Callback URL is required but unused: `"
-        + LOOPBACK_REDIRECT
-        + "`. |",
-        "| Linear | linear.app → Settings → API → OAuth applications | Redirect URI `"
-        + LOOPBACK_REDIRECT
-        + "`; allow other workspaces to install it. |",
-        "| Slack | api.slack.com/apps → Create New App | OAuth & Permissions: enable PKCE, redirect URL `"
-        + LOOPBACK_REDIRECT
-        + "`, user token scopes as listed in `apps.py`; Manage Distribution: activate public distribution. |",
+        "Every app connects with the user's own key, token or OAuth client. There is no",
+        "app to register with any service before a release.",
         "",
         "## Publishing one",
         "",

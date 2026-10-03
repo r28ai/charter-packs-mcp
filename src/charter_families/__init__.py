@@ -215,7 +215,6 @@ def _session(tools: List[Tool], connections: Any, command: str) -> Any:
             tool = self.visible().get(name)
             if tool is None or tool.pack is None:
                 return await super().dispatch(name, arguments, **kw)
-            await connections.before_call(tool.pack)
             try:
                 return await super().dispatch(name, arguments, **kw)
             except CredentialError as exc:
@@ -258,9 +257,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         "one; status says where each stands.",
     )
     parser.add_argument("apps", nargs="*", help="For login and logout: which apps (default: all).")
-    parser.add_argument(
-        "--key", action="store_true", help="login: use a key or token, not a browser sign-in."
-    )
     parser.add_argument("--name", default=None, help="Server name (default: the family names).")
     parser.add_argument(
         "--command",
@@ -304,7 +300,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         from charter_families.signin import login
 
-        return asyncio.run(login(connections, args.apps, command=command, use_key=args.key))
+        return asyncio.run(login(connections, args.apps, command=command))
 
     from charter.adapters.mcp import serve
 

@@ -2,17 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Connecting an app: a browser sign-in where the API offers one, a key where it does not.
+Connecting an app: a key for most, a browser sign-in for Google.
 
 Two entry points share everything below:
 
 - ``login`` from a terminal — ``uvx github-linear-mcp login`` connects each app
   the server uses, in turn. Keys are read with ``getpass``, so they are never
   echoed, logged or sent anywhere but the API that issued them.
-- the ``connect`` tool, which the agent calls. It starts a browser sign-in and
-  returns at once; the sign-in finishes in the background and the next call
-  picks it up. For a key it explains where to get one and where it goes — it
-  never asks for one, because a key typed into a chat is a key in a transcript.
+- the ``connect`` tool, which the agent calls. For a key it explains where to
+  get one and where it goes — it never asks for one, because a key typed into a
+  chat is a key in a transcript. For Google, once the person's own OAuth client
+  is set, it starts the browser sign-in and returns at once; the sign-in
+  finishes in the background and the next call picks it up.
 
 Every credential is checked with one read-only call to its own API before it is
 stored, so a wrong key is caught here rather than on the first real call.
@@ -30,11 +31,10 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 from urllib.parse import parse_qs, urlparse
 
 from charter import CharterError, CredentialError
-from charter.auth import AuthorizationRequest, TokenGrant, states_match
+from charter.auth import AuthorizationRequest, OAuth2Flow, states_match
 
-from charter_families.apps import APPS, LOOPBACK_PORT, LOOPBACK_REDIRECT, App, client_id
-from charter_families.connections import Connections, grant_record, public_client
-from charter_families.oauth import DeviceCode, DeviceFlow
+from charter_families.apps import APPS, LOOPBACK_PORT, LOOPBACK_REDIRECT, App
+from charter_families.connections import Connections
 
 __all__ = ["ConnectTool", "SetupPrompt", "how_to_connect", "login", "status_text"]
 
@@ -160,76 +160,60 @@ def google_scopes(packs: Sequence[str]) -> List[str]:
     return scopes_for([t for p in packs if p in APPS["google"].packs for t in _module_tools(p)])
 
 
-async def _loopback_sign_in(
+async def _google_sign_in(
     connections: Connections,
     app: App,
     *,
-    cid: str,
-    secret: Optional[str],
+    client_id: str,
+    client_secret: str,
     scopes: Sequence[str],
     open_browser: Callable[[str], Any],
     announce: Callable[[str], None],
 ) -> None:
-    client = public_client(app, cid, secret)
-    request = client.authorize(scopes, LOOPBACK_REDIRECT)
+    """The browser sign-in, over the person's own OAuth client, back to the loopback."""
+    assert app.sign_in is not None
+    flow = OAuth2Flow(
+        app.sign_in,
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=LOOPBACK_REDIRECT,
+    )
+    request = flow.authorize(scopes)
     async with Loopback() as loopback:
         announce(
             f"Opening your browser to sign in to {app.name}. If it does not open:\n{request.url}"
         )
         open_browser(request.url)
         params = await loopback.wait()
-    code = _code_from(params, request)
-    assert request.code_verifier is not None
-    grant = await client.exchange(
-        code, code_verifier=request.code_verifier, redirect_uri=LOOPBACK_REDIRECT
-    )
-    if app.sign_in is not None and app.sign_in.kind == "google":
-        record = {
-            "type": "google",
-            "client_id": cid,
-            "client_secret": secret,
-            "refresh_token": grant.refresh_token,
-            "scopes": grant.scopes,
-        }
-        if not grant.refresh_token:
-            raise CredentialError("Google returned no refresh token; start again")
-        dropped = sorted(set(scopes) - set(grant.scopes)) if grant.scopes else []
-        if dropped:
-            announce(
-                "Not granted, so the tools needing them will answer 403: " + ", ".join(dropped)
-            )
-    else:
-        record = grant_record(cid, grant)
+    # Raises on a grant with no refresh token, which would die within the hour.
+    grant = await flow.exchange(_code_from(params, request), code_verifier=request.code_verifier)
+    dropped = sorted(set(scopes) - set(grant.scopes)) if grant.scopes else []
+    if dropped:
+        announce("Not granted, so the tools needing them will answer 403: " + ", ".join(dropped))
+    record = {
+        "type": "google",
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": grant.refresh_token,
+        "scopes": grant.scopes,
+    }
     await _store_checked(connections, app, record)
 
 
-async def _device_sign_in(
-    connections: Connections,
-    app: App,
-    flow: DeviceFlow,
-    code: DeviceCode,
-) -> None:
-    grant: TokenGrant = await flow.poll(code)
-    await _store_checked(connections, app, grant_record(flow.client_id, grant))
-
-
-def _device_flow(app: App, cid: str) -> DeviceFlow:
-    assert app.sign_in is not None
-    return DeviceFlow(app.sign_in.device_endpoint, app.sign_in.token_endpoint, cid)
+def _google_client(environ: Mapping[str, str]) -> tuple[str, str]:
+    return environ.get("GOOGLE_CLIENT_ID", ""), environ.get("GOOGLE_CLIENT_SECRET", "")
 
 
 def how_to_connect(app: App, command: str, *, environ: Optional[Mapping[str, str]] = None) -> str:
     """One sentence on how to connect ``app``, for the model or for a person."""
     env = os.environ if environ is None else environ
-    if app.sign_in is not None and app.sign_in.kind == "google":
-        if env.get("GOOGLE_CLIENT_ID") and env.get("GOOGLE_CLIENT_SECRET"):
-            return "call the `connect` tool with app='google'; it opens a browser sign-in"
+    if app.sign_in is not None:
+        if all(_google_client(env)):
+            return f"call the `connect` tool with app={app.key!r}; it opens a browser sign-in"
         return (
             f"needs the user's own Google OAuth client, made once in about ten minutes "
-            f"({app.guide}); then they run `{command} login google` in a terminal"
+            f"({app.guide}); then they run `{command} login {app.key}` in a terminal"
         )
-    if app.sign_in is not None and client_id(app, env):
-        return f"call the `connect` tool with app={app.key!r}; it opens a browser sign-in"
     fields = ", ".join(f.env for f in app.fields)
     return (
         f"needs a key from {app.key_url}; the user runs `{command} login {app.key}` in a "
@@ -250,9 +234,7 @@ def status_text(connections: Connections, command: str) -> str:
     lines.append("Not connected yet:")
     for app in missing:
         line = f"- {app.name}: {how_to_connect(app, command)}."
-        if (
-            app.note and app.sign_in is None
-        ):  # a setup step; a sign-in note misleads on the key path
+        if app.note:
             line += f" {app.note}"
         lines.append(line)
     lines.append(
@@ -270,7 +252,6 @@ async def login(
     apps: Sequence[str],
     *,
     command: str,
-    use_key: bool = False,
     open_browser: Callable[[str], Any] = webbrowser.open,
     ask: Callable[[str], str] = input,
     ask_secret: Callable[[str], str] = getpass.getpass,
@@ -298,7 +279,6 @@ async def login(
                 connections,
                 app,
                 command=command,
-                use_key=use_key,
                 open_browser=open_browser,
                 ask=ask,
                 ask_secret=ask_secret,
@@ -317,50 +297,31 @@ async def _login_one(
     app: App,
     *,
     command: str,
-    use_key: bool,
     open_browser: Callable[[str], Any],
     ask: Callable[[str], str],
     ask_secret: Callable[[str], str],
     say: Callable[[str], None],
     interactive: bool,
 ) -> None:
-    sign_in = app.sign_in
-    cid = client_id(app, os.environ)
-    if sign_in is not None and sign_in.kind == "google":
-        secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+    if app.sign_in is not None:
+        cid, secret = _google_client(os.environ)
         if not (cid and secret):
             if not interactive:
-                raise CredentialError(f"run `{command} login google` in a terminal")
-            say(f"  Google needs your own OAuth client, made once: {app.guide}")
+                raise CredentialError(f"run `{command} login {app.key}` in a terminal")
+            say(f"  {app.name} needs your own OAuth client, made once: {app.guide}")
             cid = cid or ask("  OAuth client ID: ").strip()
             secret = secret or ask_secret("  OAuth client secret (hidden): ").strip()
-        await _loopback_sign_in(
+            if not (cid and secret):
+                raise CredentialError("nothing entered")
+        await _google_sign_in(
             connections,
             app,
-            cid=cid,
-            secret=secret,
+            client_id=cid,
+            client_secret=secret,
             scopes=google_scopes(connections.packs),
             open_browser=open_browser,
             announce=lambda m: say("  " + m),
         )
-        return
-    if sign_in is not None and cid and not use_key:
-        if sign_in.kind == "device":
-            flow = _device_flow(app, cid)
-            code = await flow.start(sign_in.scopes)
-            say(f"  Enter the code {code.user_code} at {code.verification_uri}")
-            open_browser(code.verification_uri)
-            await _device_sign_in(connections, app, flow, code)
-        else:
-            await _loopback_sign_in(
-                connections,
-                app,
-                cid=cid,
-                secret=None,
-                scopes=sign_in.scopes,
-                open_browser=open_browser,
-                announce=lambda m: say("  " + m),
-            )
         return
     if not interactive:
         raise CredentialError(
@@ -399,10 +360,10 @@ class ConnectTool:
     def description(self) -> str:
         return (
             "See which apps this server is connected to, or connect one. With no `app`, "
-            "reports each app's state. With an `app`, starts its browser sign-in and returns "
-            "at once — the user approves in the browser and the next call works — or, for an "
-            "app that only issues keys, says where to get one and where it goes. Never ask the "
-            "user for a key in the chat."
+            "reports each app's state. With an `app`, says where to get its key and the "
+            "command that stores it — or, for Google once the user's own OAuth client is set, "
+            "starts the browser sign-in and returns at once: the user approves in the browser "
+            "and the next call works. Never ask the user for a key in the chat."
         )
 
     @property
@@ -434,38 +395,20 @@ class ConnectTool:
         app = APPS[key]
         if self.connections.state(app) != "not connected":
             return f"{app.name} is already {self.connections.state(app)}. To switch accounts, the user runs `{self.command} login {key}`."
-        sign_in = app.sign_in
-        cid = client_id(app, os.environ)
-        if (
-            sign_in is None
-            or not cid
-            or (sign_in.kind == "google" and not os.environ.get("GOOGLE_CLIENT_SECRET"))
-        ):
-            note = f" {app.note}" if app.note and sign_in is None else ""
+        cid, secret = _google_client(os.environ)
+        if app.sign_in is None or not (cid and secret):
+            note = f" {app.note}" if app.note else ""
             return f"{app.name} {how_to_connect(app, self.command)}.{note}"
         self._errors.pop(key, None)
-        if sign_in.kind == "device":
-            flow = _device_flow(app, cid)
-            code = await flow.start(sign_in.scopes)
-            self.open_browser(code.verification_uri)
-            self._spawn(key, _device_sign_in(self.connections, app, flow, code))
-            return (
-                f"Opened {code.verification_uri}. The user enters the code {code.user_code} there "
-                f"and approves; {app.name} connects on its own after that."
-            )
         opened: List[str] = []
-        secret = os.environ.get("GOOGLE_CLIENT_SECRET") if sign_in.kind == "google" else None
-        scopes = (
-            google_scopes(self.connections.packs) if sign_in.kind == "google" else sign_in.scopes
-        )
         self._spawn(
             key,
-            _loopback_sign_in(
+            _google_sign_in(
                 self.connections,
                 app,
-                cid=cid,
-                secret=secret,
-                scopes=scopes,
+                client_id=cid,
+                client_secret=secret,
+                scopes=google_scopes(self.connections.packs),
                 open_browser=self.open_browser,
                 announce=opened.append,
             ),

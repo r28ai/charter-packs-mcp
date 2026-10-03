@@ -2,51 +2,44 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-The apps a family server connects, and the best way each one offers.
+The apps a family server connects, and how each one is connected.
 
 An app is the unit a person connects: one credential, one or more packs. The six
 Google packs are one app, because one grant covers them.
 
-Each app has a key path — the variables its packs already read, and the page
-that issues the value — and, where the API allows it, a sign-in that needs
-nothing but a click:
+Every credential is the person's own, and the Charter project registers no app
+with any of these services. GitHub, Linear, Slack, Stripe, Notion, Firecrawl,
+Tavily, Granola and Shopify each issue a key or token from their own settings,
+and that is the whole of their path.
 
-- **Linear and Slack**: authorization code with PKCE and a loopback redirect, as a
-  public client. Slack's tokens this way are the user's own: a public client may
-  not request a bot's scopes, so the agent acts as the person who signed in.
-- **GitHub**: the device flow, which is what ``gh auth login`` does.
-- **Google**: the same loopback flow over the person's *own* OAuth client. A
-  shared one would need Google's verification and, for Gmail and Drive, a paid
-  security assessment, so ``GOOGLE_CLIENT_ID`` and ``GOOGLE_CLIENT_SECRET`` come
-  from them.
-
-The rest — Stripe, Notion, Firecrawl, Tavily, Granola, Shopify — issue keys and
-no OAuth a third party can use, so a key is the whole of their path.
-
-The Charter project's public client IDs are below. A public client has no secret, which is
-what makes printing them here safe (RFC 8252). An empty one means the app is
-not registered yet, and the sign-in falls back to the key path. Each can be
-overridden with its ``*_CLIENT_ID`` variable, for an organisation that only
-allows apps it registered itself.
+Google issues no such key, so it signs in through a browser, over the person's
+*own* OAuth client: ``GOOGLE_CLIENT_ID`` and ``GOOGLE_CLIENT_SECRET`` come from
+them. A shared client would need Google's verification and, for Gmail and
+Drive, a paid security assessment.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, Literal, Mapping, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, Literal, Optional, Tuple
 
-__all__ = ["APPS", "App", "Field", "SignIn", "CLIENT_IDS", "app_for_pack"]
+from charter.auth import OAuth2Server
+
+__all__ = ["APPS", "App", "Field", "GOOGLE", "app_for_pack"]
 
 DOCS = "https://docs.r28.ai/charter"
 
-# Registered by the Charter project. Empty until registered: the sign-in is then not offered.
-CLIENT_IDS: Dict[str, str] = {
-    "github": "",
-    "linear": "",
-    "slack": "",
-}
+# As docs/auth/providers/google.mdx in Charter declares it. Without offline
+# access and a forced consent, Google returns no refresh token.
+GOOGLE = OAuth2Server(
+    issuer="https://accounts.google.com",
+    authorization_endpoint="https://accounts.google.com/o/oauth2/v2/auth",
+    token_endpoint="https://oauth2.googleapis.com/token",
+    authorization_params={"access_type": "offline", "prompt": "consent"},
+)
 
-# The fixed loopback address registered as each public client's redirect.
+# Where the browser comes back to. A Desktop app client accepts any port on
+# 127.0.0.1; a fixed one lets a Web application client register it too.
 LOOPBACK_PORT = 47613
 LOOPBACK_REDIRECT = f"http://127.0.0.1:{LOOPBACK_PORT}/callback"
 
@@ -58,22 +51,6 @@ class Field:
     env: str
     label: str
     secret: bool = True
-
-
-@dataclass(frozen=True)
-class SignIn:
-    """How an app signs in from a browser, when it can."""
-
-    kind: Literal["loopback", "device", "google"]
-    token_endpoint: str
-    scopes: Tuple[str, ...] = ()
-    authorization_endpoint: str = ""
-    device_endpoint: str = ""
-    client_id_env: str = ""
-    scope_param: str = "scope"
-    scope_separator: str = " "
-    response_root: Optional[str] = None
-    authorization_params: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -89,7 +66,9 @@ class App:
     # on every call.
     install: Literal["api_key", "provider", "env"]
     check: Optional[Tuple[str, Dict[str, object]]] = None
-    sign_in: Optional[SignIn] = None
+    # The server a browser sign-in goes to, over the person's own OAuth client.
+    # Only Google: everything else issues a key.
+    sign_in: Optional[OAuth2Server] = None
     note: str = ""
 
 
@@ -105,13 +84,6 @@ APPS: Dict[str, App] = {
             f"{DOCS}/auth/setup/github",
             install="provider",
             check=("github.users_get_authenticated", {}),
-            sign_in=SignIn(
-                "device",
-                token_endpoint="https://github.com/login/oauth/access_token",
-                device_endpoint="https://github.com/login/device/code",
-                client_id_env="GITHUB_CLIENT_ID",
-                scopes=("repo", "read:user"),
-            ),
         ),
         App(
             "linear",
@@ -122,14 +94,6 @@ APPS: Dict[str, App] = {
             f"{DOCS}/packs/linear",
             install="api_key",
             check=("linear.viewer", {}),
-            sign_in=SignIn(
-                "loopback",
-                authorization_endpoint="https://linear.app/oauth/authorize",
-                token_endpoint="https://api.linear.app/oauth/token",
-                client_id_env="LINEAR_CLIENT_ID",
-                scopes=("read", "write"),
-                scope_separator=",",
-            ),
         ),
         App(
             "slack",
@@ -140,36 +104,7 @@ APPS: Dict[str, App] = {
             f"{DOCS}/auth/setup/slack",
             install="provider",
             check=("slack.users_list", {"limit": 1}),
-            sign_in=SignIn(
-                "loopback",
-                authorization_endpoint="https://slack.com/oauth/v2/authorize",
-                token_endpoint="https://slack.com/api/oauth.v2.access",
-                client_id_env="SLACK_CLIENT_ID",
-                # User scopes: a public client may not ask for a bot's.
-                scopes=(
-                    "channels:history",
-                    "channels:read",
-                    "channels:write",
-                    "chat:write",
-                    "groups:history",
-                    "groups:read",
-                    "groups:write",
-                    "im:history",
-                    "im:read",
-                    "im:write",
-                    "mpim:history",
-                    "mpim:read",
-                    "mpim:write",
-                    "reactions:read",
-                    "reactions:write",
-                    "search:read",
-                    "users:read",
-                ),
-                scope_param="user_scope",
-                scope_separator=",",
-                response_root="authed_user",
-            ),
-            note="Signing in acts as you; a bot token from the setup guide posts as itself.",
+            note="A bot token from your own Slack app, which the guide sets up in about three minutes.",
         ),
         App(
             "google",
@@ -182,12 +117,7 @@ APPS: Dict[str, App] = {
             "https://console.cloud.google.com/auth/clients",
             f"{DOCS}/auth/setup/google",
             install="env",
-            sign_in=SignIn(
-                "google",
-                authorization_endpoint="https://accounts.google.com/o/oauth2/v2/auth",
-                token_endpoint="https://oauth2.googleapis.com/token",
-                authorization_params={"access_type": "offline", "prompt": "consent"},
-            ),
+            sign_in=GOOGLE,
         ),
         App(
             "notion",
@@ -264,12 +194,3 @@ def app_for_pack(pack: str) -> App:
         if pack in app.packs:
             return app
     raise KeyError(pack)
-
-
-def client_id(app: App, environ: Mapping[str, str]) -> str:
-    """The public client ID to sign in with: the override if set, Charter's own if registered."""
-    if app.sign_in is None:
-        return ""
-    if app.sign_in.kind == "google":
-        return environ.get("GOOGLE_CLIENT_ID", "")
-    return environ.get(app.sign_in.client_id_env, "") or CLIENT_IDS.get(app.key, "")

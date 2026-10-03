@@ -34,14 +34,14 @@ python -m charter_families engineering status          # what is connected
 ## Connecting apps
 
 Each server tells the agent at startup which apps are connected and how to connect the rest.
+Every credential is the user's own: nothing here is registered with any service, and there is
+no server of ours in the path.
 
-- **Keys** (Stripe, Notion, Firecrawl, Tavily, Granola, Shopify) come from the client's config,
-  or from `login`, which asks for them at a hidden prompt.
-- **Browser sign-in** (Linear, Slack, GitHub) is a public-client OAuth flow (RFC 8252): PKCE
-  with a loopback redirect, or GitHub's device flow. It switches on once a client ID is set in
-  `CLIENT_IDS` (`src/charter_families/apps.py`); until then those apps take a key too.
-- **Google** signs in through the user's own OAuth client, because a shared one would need
-  Google's verification, and for Gmail and Drive a paid security assessment.
+- **Keys** (GitHub, Linear, Slack, Stripe, Notion, Firecrawl, Tavily, Granola, Shopify) come
+  from the client's config, or from `login`, which asks for them at a hidden prompt.
+- **Google** signs in through the user's own OAuth client, with PKCE and a loopback redirect,
+  because a shared one would need Google's verification, and for Gmail and Drive a paid
+  security assessment.
 
 Whatever `login` or the `connect` tool stores goes to the OS keychain, after one read-only
 call to the app's own API confirms it works. A variable set in the client's config always
@@ -53,10 +53,9 @@ wins over the keychain.
 src/charter_families/
   catalogue.py    the 156 workflows: title, tools in order, why, cadence
   __init__.py     families, the MCP entry point, login / status / logout
-  apps.py         each app: its key, its sign-in, the call that checks it
+  apps.py         each app: its key, the call that checks it, Google's sign-in server
   connections.py  where each app's credential came from, handed to the packs
-  signin.py       the sign-in flows, the `connect` tool, the `setup` prompt
-  oauth.py        public-client OAuth: PKCE exchange, refresh, device flow
+  signin.py       `login`, Google's sign-in, the `connect` tool, the `setup` prompt
   keychain.py     the OS keychain, or an owner-only file without one
 scripts/generate.py   writes ../charter-mcp-families: one publishable package per family
 ```

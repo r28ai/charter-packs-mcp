@@ -1,4 +1,5 @@
-"""Connecting apps: public-client OAuth, the keychain store, and the server that uses them."""
+"""Connecting apps: keys, Google's sign-in over the user's own client, the keychain store,
+and the server that uses them."""
 
 from __future__ import annotations
 
@@ -7,36 +8,18 @@ import importlib
 import json
 import os
 import stat
-from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
 import respx
 from charter import CredentialError
-from charter.auth import TokenGrant
 
 from charter_families import FAMILIES, _session, tools_for
 from charter_families.apps import APPS, LOOPBACK_REDIRECT
-from charter_families.connections import Connections, grant_record
+from charter_families.connections import Connections
 from charter_families.keychain import FileStore, open_store
-from charter_families.oauth import DeviceFlow, PublicClient, RefreshingGrant
 from charter_families.signin import ConnectTool, SetupPrompt, login, status_text
-
-LINEAR = PublicClient(
-    authorization_endpoint="https://linear.app/oauth/authorize",
-    token_endpoint="https://api.linear.app/oauth/token",
-    client_id="lin-client",
-    scope_separator=",",
-)
-SLACK = PublicClient(
-    authorization_endpoint="https://slack.com/oauth/v2/authorize",
-    token_endpoint="https://slack.com/api/oauth.v2.access",
-    client_id="slack-client",
-    scope_param="user_scope",
-    scope_separator=",",
-    response_root="authed_user",
-)
 
 
 @pytest.fixture(autouse=True)
@@ -66,118 +49,6 @@ def _unconfigure(*packs):
             module._headers._api_key = None
         if hasattr(module, "_credentials"):
             module._credentials._provider = None
-
-
-# -- the protocol ------------------------------------------------------------------
-
-
-def test_the_authorization_url_carries_pkce_and_the_server_s_own_scope_spelling():
-    request = SLACK.authorize(["chat:write", "users:read"], LOOPBACK_REDIRECT)
-    query = parse_qs(urlparse(request.url).query)
-    assert query["user_scope"] == ["chat:write,users:read"]
-    assert query["code_challenge_method"] == ["S256"]
-    assert query["redirect_uri"] == [LOOPBACK_REDIRECT]
-    assert query["state"] == [request.state]
-    assert request.code_verifier and query["code_challenge"][0] != request.code_verifier
-
-
-@respx.mock
-async def test_a_public_client_exchanges_without_a_secret_and_reads_slack_s_shape():
-    route = respx.post("https://slack.com/api/oauth.v2.access").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "ok": True,
-                "authed_user": {"access_token": "xoxp-1", "scope": "chat:write,users:read"},
-            },
-        )
-    )
-    grant = await SLACK.exchange("c0de", code_verifier="v", redirect_uri=LOOPBACK_REDIRECT)
-    form = parse_qs(route.calls.last.request.content.decode())
-    assert "client_secret" not in form
-    assert form["code_verifier"] == ["v"] and form["client_id"] == ["slack-client"]
-    assert grant.access_token == "xoxp-1"
-    assert grant.scopes == ["chat:write", "users:read"]
-
-
-@respx.mock
-async def test_a_200_that_says_ok_false_is_a_refusal():
-    respx.post("https://slack.com/api/oauth.v2.access").mock(
-        return_value=httpx.Response(200, json={"ok": False, "error": "invalid_code"})
-    )
-    with pytest.raises(CredentialError, match="invalid_code"):
-        await SLACK.exchange("c0de", code_verifier="v", redirect_uri=LOOPBACK_REDIRECT)
-
-
-@respx.mock
-async def test_a_rotating_refresh_keeps_the_new_token_and_a_plain_one_keeps_the_old():
-    old = TokenGrant(access_token="a1", refresh_token="r1")
-    route = respx.post("https://api.linear.app/oauth/token")
-    route.mock(
-        return_value=httpx.Response(
-            200, json={"access_token": "a2", "refresh_token": "r2", "expires_in": 86400}
-        )
-    )
-    assert (await LINEAR.refresh(old)).refresh_token == "r2"
-    route.mock(return_value=httpx.Response(200, json={"access_token": "a3", "expires_in": 86400}))
-    assert (await LINEAR.refresh(old)).refresh_token == "r1"
-
-
-@respx.mock
-async def test_a_refreshing_grant_renews_once_for_concurrent_calls_and_hands_the_grant_on():
-    route = respx.post("https://api.linear.app/oauth/token").mock(
-        return_value=httpx.Response(
-            200, json={"access_token": "new", "refresh_token": "r2", "expires_in": 86400}
-        )
-    )
-    stored = []
-    expired = TokenGrant(
-        access_token="old",
-        refresh_token="r1",
-        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
-    )
-    grant = RefreshingGrant(LINEAR, expired, on_refresh=stored.append)
-    tokens = await asyncio.gather(*(grant.get_credentials("linear") for _ in range(5)))
-    assert {t.token for t in tokens} == {"new"}
-    assert route.call_count == 1
-    assert [g.refresh_token for g in stored] == ["r2"]
-
-
-@respx.mock
-async def test_the_device_flow_waits_out_pending_and_slow_down():
-    respx.post("https://github.com/login/device/code").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "device_code": "d",
-                "user_code": "ABCD-1234",
-                "verification_uri": "https://github.com/login/device",
-                "interval": 5,
-            },
-        )
-    )
-    respx.post("https://github.com/login/oauth/access_token").mock(
-        side_effect=[
-            httpx.Response(200, json={"error": "authorization_pending"}),
-            httpx.Response(200, json={"error": "slow_down", "interval": 10}),
-            httpx.Response(200, json={"access_token": "gho_x", "scope": "repo,read:user"}),
-        ]
-    )
-    waits = []
-
-    async def sleep(seconds):
-        waits.append(seconds)
-
-    flow = DeviceFlow(
-        "https://github.com/login/device/code",
-        "https://github.com/login/oauth/access_token",
-        "gh-client",
-    )
-    code = await flow.start(["repo"])
-    assert code.user_code == "ABCD-1234"
-    grant = await flow.poll(code, sleep=sleep)
-    assert grant.access_token == "gho_x"
-    assert waits == [5, 5, 10]
 
 
 # -- the store ---------------------------------------------------------------------
@@ -225,32 +96,6 @@ async def test_a_stored_key_reaches_the_wire(store):
 
     await stripe.balance_retrieve.ainvoke({})
     assert route.calls.last.request.headers["authorization"] == "Bearer sk_test_1"
-
-
-@respx.mock
-async def test_a_linear_sign_in_is_sent_as_bearer_and_renewed_before_it_lapses(store):
-    _unconfigure("linear")
-    soon = datetime.now(timezone.utc) + timedelta(seconds=30)
-    record = grant_record(
-        "lin-client", TokenGrant(access_token="old", refresh_token="r1", expires_at=soon)
-    )
-    store.set("linear", json.dumps(record))
-    connections = Connections(["linear"], store=store, environ={})
-    connections.load()
-    respx.post("https://api.linear.app/oauth/token").mock(
-        return_value=httpx.Response(
-            200, json={"access_token": "new", "refresh_token": "r2", "expires_in": 86400}
-        )
-    )
-    api = respx.post("https://api.linear.app/graphql").mock(
-        return_value=httpx.Response(200, json={"data": {"viewer": {"id": "u1"}}})
-    )
-    import charter.packs.linear as linear
-
-    await connections.before_call("linear")
-    await linear.viewer.ainvoke({})
-    assert api.calls.last.request.headers["authorization"] == "Bearer new"
-    assert json.loads(store.get("linear"))["refresh_token"] == "r2"  # the rotated one, written back
 
 
 @respx.mock
@@ -316,35 +161,61 @@ async def test_login_never_prompts_without_a_terminal(store):
     assert any("run `uvx x login stripe` in a terminal" in line for line in said)
 
 
+def test_no_app_signs_in_through_a_client_we_registered():
+    """Every credential is the user's own: Google's sign-in is the only one, over their client."""
+    assert [a.key for a in APPS.values() if a.sign_in is not None] == ["google"]
+    assert {f.env for f in APPS["google"].fields} == {"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"}
+
+
+@pytest.fixture
+def no_google_grant(monkeypatch):
+    for name in ("GOOGLE_REFRESH_TOKEN", "GOOGLE_TOKEN_FILE", "GOOGLE_ACCESS_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @respx.mock
-async def test_a_browser_sign_in_completes_through_the_loopback(store, monkeypatch):
-    _unconfigure("linear")
-    monkeypatch.setenv("LINEAR_CLIENT_ID", "lin-client")
+async def test_a_google_sign_in_completes_through_the_loopback(store, monkeypatch, no_google_grant):
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "users-own-client")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "users-own-secret")
     respx.route(host="127.0.0.1").pass_through()
-    respx.post("https://api.linear.app/oauth/token").mock(
+    token = respx.post("https://oauth2.googleapis.com/token").mock(
         return_value=httpx.Response(
-            200, json={"access_token": "lin_oauth", "refresh_token": "r1", "expires_in": 86400}
+            200, json={"access_token": "ya29", "refresh_token": "r1", "expires_in": 3599}
         )
     )
-    respx.post("https://api.linear.app/graphql").mock(
-        return_value=httpx.Response(200, json={"data": {"viewer": {"id": "u1"}}})
-    )
-    connections = Connections(["linear"], store=store, environ={})
+    connections = Connections(["gmail"], store=store, environ={})
+    asked = []
 
-    def browser(url):  # the user approves; Linear redirects back to the loopback
+    def browser(url):  # the user approves; Google redirects back to the loopback
         query = parse_qs(urlparse(url).query)
+        asked.append(query)
         callback = f"{LOOPBACK_REDIRECT}?code=c0de&state={query['state'][0]}"
         asyncio.get_running_loop().create_task(_get(callback))
 
-    tool = ConnectTool(connections, "uvx github-linear-mcp", open_browser=browser)
-    reply = await tool.call({"app": "linear"})
-    assert "Opened the Linear sign-in" in reply
+    tool = ConnectTool(connections, "uvx support-inbox-mcp", open_browser=browser)
+    reply = await tool.call({"app": "google"})
+    assert "Opened the Google sign-in" in reply
     for _ in range(50):
-        if connections.state(APPS["linear"]) == "connected":
+        if connections.state(APPS["google"]) == "connected":
             break
         await asyncio.sleep(0.05)
-    assert connections.state(APPS["linear"]) == "connected"
-    assert json.loads(store.get("linear"))["access_token"] == "lin_oauth"
+    assert connections.state(APPS["google"]) == "connected"
+
+    query = asked[0]
+    assert query["client_id"] == ["users-own-client"]
+    assert query["access_type"] == ["offline"] and query["code_challenge_method"] == ["S256"]
+    form = parse_qs(token.calls.last.request.content.decode())
+    assert form["client_secret"] == ["users-own-secret"] and form["code_verifier"]
+    stored = json.loads(store.get("google"))
+    assert stored["client_id"] == "users-own-client" and stored["refresh_token"] == "r1"
+
+
+async def test_google_asks_for_the_user_s_own_client_first(store, monkeypatch, no_google_grant):
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
+    connections = Connections(["gmail"], store=store, environ={})
+    reply = await ConnectTool(connections, "uvx x").call({"app": "google"})
+    assert "own Google OAuth client" in reply and "uvx x login google" in reply
 
 
 async def _get(url):
@@ -360,11 +231,14 @@ async def test_connect_explains_a_key_and_never_asks_for_it(store):
     assert "uvx stripe-billing-ops-mcp login stripe" in reply
 
 
-async def test_connect_offers_no_sign_in_until_a_client_id_is_registered(store, monkeypatch):
-    monkeypatch.delenv("LINEAR_CLIENT_ID", raising=False)
-    connections = Connections(["linear"], store=store, environ={})
-    reply = await ConnectTool(connections, "uvx x").call({"app": "linear"})
-    assert "needs a key" in reply
+@pytest.mark.parametrize("app", ["github", "linear", "slack"])
+async def test_github_linear_and_slack_connect_with_the_user_s_own_key(store, monkeypatch, app):
+    for field in APPS[app].fields:
+        monkeypatch.delenv(field.env, raising=False)
+    _unconfigure(app)
+    connections = Connections([app], store=store, environ={})
+    reply = await ConnectTool(connections, "uvx x").call({"app": app})
+    assert "needs a key from" in reply and f"uvx x login {app}" in reply
 
 
 def test_the_opening_status_says_how_to_connect_and_forbids_keys_in_chat(store):
