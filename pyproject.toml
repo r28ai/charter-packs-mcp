@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "charter-families"
+version = "0.1.0"
+description = "Cross-app agent workflows over Charter's packs, served as MCP servers, with sign-in for every app they use."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+authors = [{ name = "R28 AI, Inc.", email = "oss@r28.ai" }]
+keywords = ["mcp", "mcp-server", "ai-agents", "charter", "workflows"]
+dependencies = [
+    # Prompts and server instructions in the MCP adapter arrive in 0.3.0.
+    "charter-ai[mcp]>=0.3.0,<0.4",
+    # Where `login` and the `connect` tool keep what they store: the macOS
+    # Keychain, Windows Credential Manager or the Secret Service, the way `gh`
+    # keeps its token. Without a keychain, an owner-only file instead.
+    "keyring>=24",
+]
+
+[project.urls]
+Repository = "https://github.com/r28ai/charter-families"
+Charter = "https://github.com/r28ai/charter"
+
+[project.scripts]
+charter-families = "charter_families:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "ruff>=0.6",
+    "pyright>=1.1.380",
+]
+
+[tool.uv]
+# Until Charter 0.3.0 is on PyPI, develop against the checkout beside this one,
+# whatever version it reports.
+override-dependencies = ["charter-ai[mcp]"]
+
+[tool.uv.sources]
+charter-ai = { path = "../charter", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/charter_families"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# Charter's own settings, so code moves between the two repos unchanged.
+ignore = ["E501", "B008", "UP006", "UP007", "UP035", "UP045"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["charter_families"]
+known-third-party = ["charter"]
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.10"
