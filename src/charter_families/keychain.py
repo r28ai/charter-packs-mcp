@@ -9,9 +9,15 @@ macOS Keychain, Windows Credential Manager, or the Secret Service on Linux, via
 holding a JSON document: an API key, or a grant and when it lapses.
 
 Where there is no keychain — a container, a headless Linux box with no Secret
-Service — entries go to a file instead, readable by its owner alone, the way
-``gh`` falls back to ``hosts.yml``. ``$CHARTER_CREDENTIALS_FILE`` forces the
-file, which is also how a test points this somewhere harmless.
+Service — or one that does not answer — a Secret Service that is locked with no
+one to unlock it, over SSH or from cron — entries go to a file instead,
+readable by its owner alone, the way ``gh`` falls back to ``hosts.yml``.
+``$CHARTER_CREDENTIALS_FILE`` forces the file, which is also how a test points
+this somewhere harmless.
+
+Windows Credential Manager holds at most 2,560 bytes per entry, stored as UTF-16:
+1,280 characters. The largest entry a family writes, a Google grant with every
+scope a family asks for, is about 720; ``tests/test_connect.py`` keeps it under.
 
 Nothing here is read by the library's core. A pack still reads its environment
 variables and its ``configure()``; this store is what :mod:`charter_families`
@@ -26,9 +32,13 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional, Protocol
 
+from charter import CredentialError
+
 __all__ = ["FileStore", "KeychainStore", "SecretStore", "open_store"]
 
 SERVICE = "charter"
+
+WINDOWS_ENTRY_LIMIT = 1280
 
 # What people call each backend. The class itself is named ``Keyring`` on macOS
 # and the Secret Service alike, which printed "Stored in the Keyring keychain".
@@ -56,14 +66,29 @@ class KeychainStore:
 
     def __init__(self, keyring_module: object) -> None:
         self._keyring = keyring_module
-        backend = type(keyring_module.get_keyring())  # type: ignore[attr-defined]
-        self.location = _BACKEND_NAMES.get(backend.__module__, f"the {backend.__name__} keychain")
+        backend = keyring_module.get_keyring()  # type: ignore[attr-defined]
+        # Where several backends are usable (a Linux desktop with both KWallet and
+        # the Secret Service), keyring chains them and writes to the first.
+        kind = type((getattr(backend, "backends", None) or [backend])[0])
+        self.location = _BACKEND_NAMES.get(kind.__module__, f"the {kind.__name__} keychain")
 
+    # keyring raises its own errors, and the backends below it theirs (D-Bus,
+    # pywin32's): none is a CredentialError, which is what `login` reports and the
+    # server turns into a sentence for the agent rather than a traceback.
     def get(self, name: str) -> Optional[str]:
-        return self._keyring.get_password(SERVICE, name)  # type: ignore[attr-defined]
+        try:
+            return self._keyring.get_password(SERVICE, name)  # type: ignore[attr-defined]
+        except Exception as exc:
+            raise CredentialError(f"{self.location} did not answer: {exc}") from exc
 
     def set(self, name: str, value: str) -> None:
-        self._keyring.set_password(SERVICE, name, value)  # type: ignore[attr-defined]
+        try:
+            self._keyring.set_password(SERVICE, name, value)  # type: ignore[attr-defined]
+        except Exception as exc:
+            raise CredentialError(
+                f"{self.location} would not store it: {exc}. To keep credentials in an "
+                "owner-only file instead, set CHARTER_CREDENTIALS_FILE to its path."
+            ) from exc
 
     def delete(self, name: str) -> None:
         try:
@@ -119,13 +144,22 @@ def open_store() -> SecretStore:
         return FileStore(Path(forced))
     try:
         import keyring
-        from keyring.backends import fail
+        from keyring.backends import fail, null
     except ImportError:
         return FileStore(_default_file())
-    if isinstance(keyring.get_keyring(), fail.Keyring):
-        print(
-            f"charter: no keychain available; storing credentials in {_default_file()} (mode 600)",
-            file=sys.stderr,
-        )
-        return FileStore(_default_file())
+    backend = keyring.get_keyring()
+    if isinstance(backend, (fail.Keyring, null.Keyring)):  # null stores nothing, silently
+        return _fallback("no keychain available")
+    try:
+        # A Secret Service that is running but locked, or a session bus out of reach,
+        # passes the check above and fails on first use: find out now, not mid-login.
+        backend.get_password(SERVICE, "-")
+    except Exception as exc:
+        return _fallback(f"the keychain did not answer ({exc})")
     return KeychainStore(keyring)
+
+
+def _fallback(reason: str) -> FileStore:
+    path = _default_file()
+    print(f"charter: {reason}; storing credentials in {path} (mode 600)", file=sys.stderr)
+    return FileStore(path)

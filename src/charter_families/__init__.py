@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import io
 import re
 import sys
 from dataclasses import dataclass
@@ -239,8 +240,26 @@ def _session(tools: List[Tool], connections: Any, command: str) -> Any:
     return FamilySession(tools, progressive=False)
 
 
+def _utf8_output() -> None:
+    """Write what this prints as UTF-8, wherever it goes.
+
+    Windows encodes a piped or redirected stream in the ANSI code page, cp1252,
+    which has no "→": `status` raised UnicodeEncodeError on Windows as soon as an
+    agent ran it, or its output went to a file, rather than to a console. UTF-8 is
+    what Python is moving every stream to (PEP 686). The MCP protocol itself is
+    unaffected: the server writes it to ``sys.stdout.buffer``, as UTF-8 already.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper) and stream.encoding.lower() not in (
+            "utf-8",
+            "utf8",
+        ):
+            stream.reconfigure(encoding="utf-8")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Serve families over MCP (stdio), or connect the apps they use."""
+    _utf8_output()
     parser = argparse.ArgumentParser(
         prog="python -m charter_families",
         description="Serve Charter families over the Model Context Protocol (stdio), "

@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import io
 import json
 import os
 import stat
+import sys
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -15,15 +17,16 @@ import pytest
 import respx
 from charter import CredentialError
 
-from charter_families import FAMILIES, _session, tools_for
+from charter_families import FAMILIES, _session, main, tools_for
 from charter_families.apps import APPS, LOOPBACK_REDIRECT
 from charter_families.connections import Connections
-from charter_families.keychain import FileStore, KeychainStore, open_store
+from charter_families.keychain import WINDOWS_ENTRY_LIMIT, FileStore, KeychainStore, open_store
 from charter_families.signin import (
     ConnectTool,
     Loopback,
     SetupPrompt,
     StatusTool,
+    google_scopes,
     login,
     status_text,
 )
@@ -61,6 +64,7 @@ def _unconfigure(*packs):
 # -- the store ---------------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="no POSIX modes; the profile's ACL protects it")
 def test_the_file_store_is_readable_by_its_owner_alone(store):
     store.set("stripe", "{}")
     mode = stat.S_IMODE(os.stat(store.path).st_mode)
@@ -75,12 +79,128 @@ def test_the_file_can_be_forced_for_a_machine_with_no_keychain(tmp_path, monkeyp
     assert isinstance(open_store(), FileStore)
 
 
-def test_the_keychain_is_named_the_way_its_users_know_it():
-    # keyring's macOS backend, without needing a Mac: the class is `Keyring`, which
-    # is how "Stored in the Keyring keychain" came to be printed.
-    Keyring = type("Keyring", (), {"__module__": "keyring.backends.macOS"})
-    module = type("keyring", (), {"get_keyring": staticmethod(Keyring)})
-    assert KeychainStore(module).location == "the macOS Keychain"
+def _backend(module, **methods):
+    """A keyring backend as keyring's own module names it, without that OS to hand."""
+    attrs = {k: staticmethod(v) if callable(v) else v for k, v in methods.items()}
+    return type("Keyring", (), {"__module__": module, **attrs})()
+
+
+def _keyring_module(backend):
+    return type(
+        "keyring",
+        (),
+        {
+            "get_keyring": staticmethod(lambda: backend),
+            "get_password": staticmethod(lambda s, n: backend.get_password(s, n)),
+            "set_password": staticmethod(lambda s, n, v: backend.set_password(s, n, v)),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "module, name",
+    [
+        # The class is `Keyring` on both, which printed "Stored in the Keyring keychain".
+        ("keyring.backends.macOS", "the macOS Keychain"),
+        ("keyring.backends.SecretService", "the Secret Service"),
+        ("keyring.backends.Windows", "Windows Credential Manager"),
+    ],
+)
+def test_the_keychain_is_named_the_way_its_users_know_it(module, name):
+    assert KeychainStore(_keyring_module(_backend(module))).location == name
+
+
+def test_a_chain_of_keychains_is_named_by_the_one_it_writes_to():
+    # A Linux desktop with KWallet and the Secret Service both usable gets a chainer.
+    chain = _backend(
+        "keyring.backends.chainer",
+        backends=[_backend("keyring.backends.SecretService"), _backend("keyring.backends.kwallet")],
+    )
+    assert KeychainStore(_keyring_module(chain)).location == "the Secret Service"
+
+
+def _locked(*args):
+    from keyring.errors import KeyringLocked
+
+    raise KeyringLocked("Failed to unlock the collection!")
+
+
+@pytest.mark.parametrize("why", ["locked", "null"])
+def test_a_keychain_that_cannot_keep_anything_falls_back_to_the_file(
+    why, tmp_path, monkeypatch, capsys
+):
+    import keyring
+    from keyring.backends import null
+
+    # Locked: a Secret Service over SSH, nobody at the screen to unlock it. Null:
+    # keyring's backend that accepts every write and keeps none.
+    backend = _backend("keyring.backends.SecretService", get_password=_locked)
+    monkeypatch.setattr(
+        keyring, "get_keyring", lambda: null.Keyring() if why == "null" else backend
+    )
+    monkeypatch.delenv("CHARTER_CREDENTIALS_FILE", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    store = open_store()
+    assert isinstance(store, FileStore)
+    assert store.path == tmp_path / "charter" / "credentials.json"
+    assert str(store.path) in capsys.readouterr().err
+
+
+@respx.mock
+async def test_a_keychain_that_refuses_an_entry_is_reported_not_raised():
+    _unconfigure("stripe")
+
+    def refuse(*args):  # what pywin32 raises for an entry over Credential Manager's limit
+        raise OSError(1783, "CredWrite", "The stub received bad data.")
+
+    backend = _backend(
+        "keyring.backends.Windows", get_password=lambda s, n: None, set_password=refuse
+    )
+    connections = Connections(["stripe"], store=KeychainStore(_keyring_module(backend)), environ={})
+    respx.get("https://api.stripe.com/v1/balance").mock(return_value=httpx.Response(200, json={}))
+    said = []
+    code = await login(
+        connections,
+        ["stripe"],
+        command="x",
+        open_browser=lambda url: None,
+        ask_secret=lambda prompt: "sk_good",
+        say=said.append,
+        interactive=True,
+    )
+    assert code == 1
+    assert any(
+        "Windows Credential Manager would not store it" in line
+        and "CHARTER_CREDENTIALS_FILE" in line
+        for line in said
+    )
+
+
+def test_status_prints_to_a_windows_pipe(tmp_path, monkeypatch):
+    # Windows encodes a piped stdout as cp1252, which has no "→", and Granola's
+    # instructions have one: `support status` raised in CI on windows-latest.
+    out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setenv("CHARTER_CREDENTIALS_FILE", str(tmp_path / "c.json"))
+    monkeypatch.delenv("GRANOLA_API_KEY", raising=False)
+    assert main(["support", "status"]) == 0
+    out.flush()
+    assert "Settings → Connectors" in out.buffer.getvalue().decode("utf-8")
+
+
+def test_every_family_s_google_grant_fits_one_windows_credential():
+    # Credential Manager keeps 2,560 bytes of UTF-16 per entry. Google allows a
+    # refresh token up to 512 bytes; the client ID and secret are the lengths
+    # Google issues today. A family that asks for more scopes is what would break it.
+    for name, family in FAMILIES.items():
+        record = {
+            "type": "google",
+            "client_id": "0" * 12 + "-" + "x" * 32 + ".apps.googleusercontent.com",
+            "client_secret": "GOCSPX-" + "x" * 28,
+            "refresh_token": "1//" + "x" * 509,
+            "scopes": google_scopes([t.pack for t in tools_for([family]) if t.pack]),
+        }
+        assert len(json.dumps(record)) <= WINDOWS_ENTRY_LIMIT, name
 
 
 # -- connections -------------------------------------------------------------------

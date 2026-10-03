@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        run: |
+          uv venv --python ${{ matrix.python-version }}
+          uv pip install -e . pytest pytest-asyncio respx ruff pyright
+      - name: Ruff
+        run: uv run --no-sync ruff check src tests scripts
+      - name: Ruff format
+        run: uv run --no-sync ruff format --check src tests scripts
+      - name: Pyright
+        run: uv run --no-sync pyright --project . src
+      - name: Pytest
+        run: uv run --no-sync pytest -q
+
+  # The tests fake each keychain. This is each real one: what `login` stores, read
+  # back by another process, then forgotten by a third.
+  keychain:
+    name: keychain (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows, os: windows-latest, expect: "Windows Credential Manager" }
+          - { name: macos, os: macos-latest, expect: "the macOS Keychain" }
+          # A Linux desktop: the Secret Service, unlocked at login.
+          - { name: linux desktop, os: ubuntu-latest, keyring: unlocked, expect: "the Secret Service" }
+          # SSH into that desktop with the keyring locked and nobody at the screen.
+          - { name: linux locked, os: ubuntu-latest, keyring: locked, expect: "credentials.json" }
+          # A server, a container or WSL: no Secret Service at all.
+          - { name: linux headless, os: ubuntu-latest, expect: "credentials.json" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        run: |
+          uv venv --python 3.13
+          uv pip install -e .
+      - name: Install the Secret Service
+        if: matrix.keyring
+        run: sudo apt-get update -q && sudo apt-get install -yq gnome-keyring dbus
+      - name: Store, read back, forget
+        shell: bash
+        env:
+          EXPECT: ${{ matrix.expect }}
+        run: |
+          case "${{ matrix.keyring }}" in
+            unlocked) dbus-run-session -- bash -c \
+              'echo -n ci | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+               uv run --no-sync python scripts/keychain_check.py "$EXPECT"' ;;
+            locked) dbus-run-session -- bash -c \
+              'gnome-keyring-daemon --start --components=secrets >/dev/null
+               timeout 120 uv run --no-sync python scripts/keychain_check.py "$EXPECT"' ;;
+            *) uv run --no-sync python scripts/keychain_check.py "$EXPECT" ;;
+          esac
