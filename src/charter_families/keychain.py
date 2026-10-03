@@ -30,6 +30,16 @@ __all__ = ["FileStore", "KeychainStore", "SecretStore", "open_store"]
 
 SERVICE = "charter"
 
+# What people call each backend. The class itself is named ``Keyring`` on macOS
+# and the Secret Service alike, which printed "Stored in the Keyring keychain".
+_BACKEND_NAMES = {
+    "keyring.backends.macOS": "the macOS Keychain",
+    "keyring.backends.Windows": "Windows Credential Manager",
+    "keyring.backends.SecretService": "the Secret Service",
+    "keyring.backends.libsecret": "the Secret Service",
+    "keyring.backends.kwallet": "KWallet",
+}
+
 
 class SecretStore(Protocol):
     location: str
@@ -46,7 +56,8 @@ class KeychainStore:
 
     def __init__(self, keyring_module: object) -> None:
         self._keyring = keyring_module
-        self.location = f"the {type(keyring_module.get_keyring()).__name__} keychain"  # type: ignore[attr-defined]
+        backend = type(keyring_module.get_keyring())  # type: ignore[attr-defined]
+        self.location = _BACKEND_NAMES.get(backend.__module__, f"the {backend.__name__} keychain")
 
     def get(self, name: str) -> Optional[str]:
         return self._keyring.get_password(SERVICE, name)  # type: ignore[attr-defined]

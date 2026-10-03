@@ -18,7 +18,7 @@ from charter import CredentialError
 from charter_families import FAMILIES, _session, tools_for
 from charter_families.apps import APPS, LOOPBACK_REDIRECT
 from charter_families.connections import Connections
-from charter_families.keychain import FileStore, open_store
+from charter_families.keychain import FileStore, KeychainStore, open_store
 from charter_families.signin import ConnectTool, SetupPrompt, StatusTool, login, status_text
 
 
@@ -66,6 +66,14 @@ def test_the_file_store_is_readable_by_its_owner_alone(store):
 def test_the_file_can_be_forced_for_a_machine_with_no_keychain(tmp_path, monkeypatch):
     monkeypatch.setenv("CHARTER_CREDENTIALS_FILE", str(tmp_path / "c.json"))
     assert isinstance(open_store(), FileStore)
+
+
+def test_the_keychain_is_named_the_way_its_users_know_it():
+    # keyring's macOS backend, without needing a Mac: the class is `Keyring`, which
+    # is how "Stored in the Keyring keychain" came to be printed.
+    Keyring = type("Keyring", (), {"__module__": "keyring.backends.macOS"})
+    module = type("keyring", (), {"get_keyring": staticmethod(Keyring)})
+    assert KeychainStore(module).location == "the macOS Keychain"
 
 
 # -- connections -------------------------------------------------------------------
