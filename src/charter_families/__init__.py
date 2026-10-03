@@ -227,11 +227,22 @@ def _session(tools: List[Tool], connections: Any, command: str) -> Any:
                 if connections.load():
                     return await super().dispatch(name, arguments, **kw)
                 app = app_for_pack(tool.pack)
-                if connections.state(app) == "not connected":
+                state = connections.state(app)
+                if state == "not connected":
                     message = f"{app.name} is not connected. To connect it: {how_to_connect(app, command)}."
+                elif state == "set in the environment":
+                    # Say where it came from: "log in again" cannot fix a variable the
+                    # client sets, which wins over the keychain for as long as it is set.
+                    names = [f.env for f in app.fields if os.environ.get(f.env)]
+                    what = " and ".join(f"the {n}" for n in names) or "the credential"
+                    message = (
+                        f"{app.name} refused {what} set in the client's config for this "
+                        f"server ({exc}). Fix or remove it there: while it is set, the "
+                        f"keychain is not used, so `{command} login {app.key}` changes nothing."
+                    )
                 else:
                     message = (
-                        f"{app.name} refused the credential this server holds ({exc}). "
+                        f"{app.name} refused the credential `{command} login` stored ({exc}). "
                         f"Reconnect with `{command} login {app.key}`."
                     )
                 raise CredentialError(

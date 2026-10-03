@@ -271,6 +271,44 @@ async def test_an_app_connected_mid_session_works_on_the_next_call_without_a_res
     assert await session.dispatch("stripe_balance_retrieve", {}) is not None
 
 
+@respx.mock
+async def test_a_refused_key_from_the_client_s_config_is_named_not_blamed_on_login(
+    store, monkeypatch
+):
+    # In Claude Desktop the placeholder ${user_config.github_token} reached GitHub as
+    # the token, and the error said to log in again: no use while the client's
+    # variable wins over the keychain. Name the variable and where to change it.
+    _unconfigure("github")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_from_the_client")
+    tools = [t for t in tools_for([FAMILIES["engineering"]]) if t.pack == "github"]
+    connections = Connections(["github"], store=store, environ={})
+    assert connections.state(APPS["github"]) == "set in the environment"
+    respx.get("https://api.github.com/repos/o/r/issues").mock(
+        return_value=httpx.Response(401, json={"message": "Bad credentials"})
+    )
+    session = _session(tools, connections, "github-linear-mcp")
+    with pytest.raises(CredentialError) as raised:
+        await session.dispatch("github_issues_list_for_repo", {"owner": "o", "repo": "r"})
+    assert "the GITHUB_TOKEN set in the client's config" in str(raised.value)
+    assert "changes nothing" in str(raised.value)
+
+
+@respx.mock
+async def test_a_refused_key_from_the_keychain_says_to_log_in_again(store, monkeypatch):
+    _unconfigure("github")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    store.set("github", json.dumps({"type": "key", "values": {"GITHUB_TOKEN": "ghp_revoked"}}))
+    tools = [t for t in tools_for([FAMILIES["engineering"]]) if t.pack == "github"]
+    connections = Connections(["github"], store=store, environ={})
+    connections.load()
+    respx.get("https://api.github.com/repos/o/r/issues").mock(
+        return_value=httpx.Response(401, json={"message": "Bad credentials"})
+    )
+    session = _session(tools, connections, "github-linear-mcp")
+    with pytest.raises(CredentialError, match="Reconnect with `github-linear-mcp login github`"):
+        await session.dispatch("github_issues_list_for_repo", {"owner": "o", "repo": "r"})
+
+
 # -- signing in --------------------------------------------------------------------
 
 
