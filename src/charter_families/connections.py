@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence
 
 from charter import CredentialError
 from charter.auth import StaticTokenProvider
+from charter.packs import is_configured
 
 from charter_families.apps import App, app_for_pack
 
@@ -35,16 +36,6 @@ __all__ = ["Connections"]
 
 def _module(pack: str) -> Any:
     return importlib.import_module(f"charter.packs.{pack}")
-
-
-def _pack_configured(pack: str) -> bool:
-    """Whether a pack can already authenticate: configured in code or from its variables."""
-    module = _module(pack)
-    for attr in ("_credentials", "_headers"):
-        holder = getattr(module, attr, None)
-        if holder is not None and hasattr(holder, "is_configured"):
-            return bool(holder.is_configured)
-    return False
 
 
 class Connections:
@@ -70,7 +61,7 @@ class Connections:
         self.from_env = {
             app.key
             for app in self.apps
-            if any(_pack_configured(p) for p in app.packs if p in self.packs)
+            if any(is_configured(p) for p in app.packs if p in self.packs)
         }
         self._installed: Dict[str, str] = {}
 

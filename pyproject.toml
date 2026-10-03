@@ -12,8 +12,9 @@ requires-python = ">=3.10"
 authors = [{ name = "R28 AI, Inc.", email = "oss@r28.ai" }]
 keywords = ["mcp", "mcp-server", "ai-agents", "charter", "workflows"]
 dependencies = [
-    # Prompts and server instructions in the MCP adapter arrive in 0.3.0.
-    "charter-ai[mcp]>=0.3.0,<0.4",
+    # Prompts and server instructions in the MCP adapter arrive in 0.3.0;
+    # charter.packs.is_configured, which says whether an app is connected, in 0.3.1.
+    "charter-ai[mcp]>=0.3.1,<0.4",
     # Where `login` and the `connect` tool keep what they store: the macOS
     # Keychain, Windows Credential Manager or the Secret Service, the way `gh`
     # keeps its token. Without a keychain, an owner-only file instead.

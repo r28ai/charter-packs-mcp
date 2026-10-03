@@ -25,7 +25,7 @@ from typing import Dict, Literal, Optional, Tuple
 
 from charter.auth import OAuth2Server
 
-__all__ = ["APPS", "App", "Field", "GOOGLE", "app_for_pack"]
+__all__ = ["APPS", "App", "Field", "GOOGLE", "GOOGLE_CHECKS", "app_for_pack"]
 
 DOCS = "https://docs.r28.ai/charter"
 
@@ -42,6 +42,42 @@ GOOGLE = OAuth2Server(
 # 127.0.0.1; a fixed one lets a Web application client register it too.
 LOOPBACK_PORT = 47613
 LOOPBACK_REDIRECT = f"http://127.0.0.1:{LOOPBACK_PORT}/callback"
+
+# After a Google sign-in, one read per Google API the server calls. The token
+# exchange already proved the grant; what these find is an API still turned off
+# in the person's Cloud project, which otherwise shows up on first use as a 403
+# that reads like a permission problem. Sheets, Docs and Forms read nothing
+# without an ID, so they are asked for one that cannot exist: a 404 means the
+# API is on. Each: the read, its arguments, the API's name, and its service.
+NO_SUCH_ID = "charter-connection-check"
+GOOGLE_CHECKS: Dict[str, Tuple[str, Dict[str, object], str, str]] = {
+    "gmail": ("gmail.labels_list", {}, "Gmail API", "gmail.googleapis.com"),
+    "gcalendar": (
+        "gcalendar.calendar_list_list",
+        {"max_results": 1},
+        "Google Calendar API",
+        "calendar-json.googleapis.com",
+    ),
+    "gdrive": ("gdrive.files_list", {"page_size": 1}, "Google Drive API", "drive.googleapis.com"),
+    "gsheets": (
+        "gsheets.spreadsheets_get",
+        {"spreadsheet_id": NO_SUCH_ID},
+        "Google Sheets API",
+        "sheets.googleapis.com",
+    ),
+    "gdocs": (
+        "gdocs.documents_get",
+        {"document_id": NO_SUCH_ID},
+        "Google Docs API",
+        "docs.googleapis.com",
+    ),
+    "gforms": (
+        "gforms.forms_get",
+        {"form_id": NO_SUCH_ID},
+        "Google Forms API",
+        "forms.googleapis.com",
+    ),
+}
 
 
 @dataclass(frozen=True)

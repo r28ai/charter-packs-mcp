@@ -31,10 +31,17 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 from urllib.parse import parse_qs, urlparse
 
-from charter import CharterError, CredentialError
+from charter import APIError, CharterError, CredentialError
 from charter.auth import AuthorizationRequest, OAuth2Flow, states_match
 
-from charter_families.apps import APPS, LOOPBACK_PORT, LOOPBACK_REDIRECT, App
+from charter_families.apps import (
+    APPS,
+    GOOGLE_CHECKS,
+    LOOPBACK_PORT,
+    LOOPBACK_REDIRECT,
+    NO_SUCH_ID,
+    App,
+)
 from charter_families.connections import Connections
 
 __all__ = [
@@ -150,10 +157,18 @@ def _code_from(params: Mapping[str, str], request: AuthorizationRequest) -> str:
 # -- checking and storing --------------------------------------------------------
 
 
-async def verify(app: App) -> None:
-    """One read-only call to the app's own API, with the credential just installed."""
+async def verify(
+    app: App, packs: Sequence[str] = (), granted: Optional[Sequence[str]] = None
+) -> List[str]:
+    """One read-only call to the app's own API, with the credential just installed.
+
+    Raises if the app refuses the credential. Returns what is worth saying about
+    one it accepted: for Google, each API among ``packs`` still turned off.
+    """
+    if app.key == "google":
+        return await _check_google(packs, granted)
     if app.check is None:
-        return
+        return []
     from charter_families import _tool
 
     step, args = app.check
@@ -161,13 +176,51 @@ async def verify(app: App) -> None:
         await _tool(step).ainvoke(dict(args))
     except CharterError as exc:
         raise CredentialError(f"{app.name} did not accept that credential: {exc}") from exc
+    return []
 
 
-async def _store_checked(connections: Connections, app: App, record: Mapping[str, Any]) -> None:
+async def _check_google(packs: Sequence[str], granted: Optional[Sequence[str]]) -> List[str]:
+    """A read from each Google API the server calls, with the grant just made."""
+    from charter_families import _tool
+
+    notes: List[str] = []
+    for pack in packs:
+        if pack not in GOOGLE_CHECKS:
+            continue
+        step, args, api, service = GOOGLE_CHECKS[pack]
+        tool = _tool(step)
+        if granted and not set(tool.scopes) <= set(granted):
+            continue  # a scope the person unticked, which the sign-in already said
+        try:
+            await tool.ainvoke(dict(args))
+        except CredentialError as exc:  # the grant itself: a revoked token, a wrong secret
+            raise CredentialError(f"Google did not accept the sign-in: {exc}") from exc
+        except APIError as exc:
+            if exc.status_code == 404 and NO_SUCH_ID in args.values():
+                continue  # it looked for the ID that cannot exist, so it is on
+            body = exc.body.lower()
+            if exc.status_code == 403 and (
+                "service_disabled" in body or "has not been used" in body
+            ):
+                notes.append(
+                    f"The {api} is turned off in the Google Cloud project your OAuth client "
+                    "belongs to, so its tools will answer 403 until it is on: "
+                    f"https://console.cloud.google.com/apis/library/{service}"
+                )
+            else:
+                notes.append(f"The {api} did not answer as expected: {exc}")
+        except CharterError as exc:
+            notes.append(f"The {api} could not be checked: {exc}")
+    return notes
+
+
+async def _store_checked(
+    connections: Connections, app: App, record: Mapping[str, Any]
+) -> List[str]:
     previous = connections.store.get(app.key)
     connections.install(app, record)
     try:
-        await verify(app)
+        notes = await verify(app, connections.packs, record.get("scopes"))
     except CredentialError:
         if previous:
             import json
@@ -175,6 +228,7 @@ async def _store_checked(connections: Connections, app: App, record: Mapping[str
             connections.install(app, json.loads(previous))
         raise
     connections.save(app, record)
+    return notes
 
 
 # -- the flows -------------------------------------------------------------------
@@ -198,8 +252,11 @@ async def _google_sign_in(
     scopes: Sequence[str],
     open_browser: Callable[[str], Any],
     announce: Callable[[str], None],
-) -> None:
-    """The browser sign-in, over the person's own OAuth client, back to the loopback."""
+) -> List[str]:
+    """The browser sign-in, over the person's own OAuth client, back to the loopback.
+
+    Returns, and announces, each Google API the server calls that is turned off.
+    """
     assert app.sign_in is not None
     flow = OAuth2Flow(
         app.sign_in,
@@ -227,7 +284,10 @@ async def _google_sign_in(
         "refresh_token": grant.refresh_token,
         "scopes": grant.scopes,
     }
-    await _store_checked(connections, app, record)
+    notes = await _store_checked(connections, app, record)
+    for note in notes:
+        announce(note)
+    return notes
 
 
 def _google_client(environ: Mapping[str, str]) -> tuple[str, str]:
@@ -391,6 +451,7 @@ class ConnectTool:
         self._tasks: Set[asyncio.Task[None]] = set()
         # Sign-ins that failed in the background, by app, for the status to report.
         self.errors: Dict[str, str] = {}
+        self.notes: Dict[str, str] = {}  # what a sign-in that succeeded still wants said
 
     @property
     def description(self) -> str:
@@ -421,7 +482,7 @@ class ConnectTool:
         self.connections.load()
         key = arguments.get("app")
         if not key:  # the schema requires one; answer with the status rather than fail
-            return status_report(self.connections, self.command, self.errors)
+            return status_report(self.connections, self.command, self.errors, self.notes)
         if key not in {a.key for a in self.connections.apps}:
             return f"This server does not use {key!r}."
         app = APPS[key]
@@ -432,6 +493,7 @@ class ConnectTool:
             note = f" {app.note}" if app.note else ""
             return f"{app.name} {how_to_connect(app, self.command)}.{note}"
         self.errors.pop(key, None)
+        self.notes.pop(key, None)
         opened: List[str] = []
         self._spawn(
             key,
@@ -458,9 +520,12 @@ class ConnectTool:
     def _spawn(self, key: str, coro: Any) -> None:
         async def run() -> None:
             try:
-                await coro
+                notes = await coro
             except Exception as exc:  # reported by `connection_status`
                 self.errors[key] = str(exc)
+            else:
+                if notes:
+                    self.notes[key] = " ".join(notes)
 
         task = asyncio.get_running_loop().create_task(run())
         self._tasks.add(task)
@@ -491,14 +556,23 @@ class StatusTool:
 
     async def call(self, arguments: Mapping[str, Any]) -> str:
         self.connections.load()
-        return status_report(self.connections, self.command, self.connect.errors)
+        return status_report(
+            self.connections, self.command, self.connect.errors, self.connect.notes
+        )
 
 
-def status_report(connections: Connections, command: str, errors: Mapping[str, str]) -> str:
-    """:func:`status_text`, plus the sign-ins that failed since it was last read."""
+def status_report(
+    connections: Connections,
+    command: str,
+    errors: Mapping[str, str],
+    notes: Optional[Mapping[str, str]] = None,
+) -> str:
+    """:func:`status_text`, plus how the sign-ins since it was last read went."""
     text = status_text(connections, command)
     if errors:
         text += "\nLast sign-in errors: " + "; ".join(f"{k}: {v}" for k, v in errors.items())
+    if notes:
+        text += "\nConnected, with a warning: " + "; ".join(f"{k}: {v}" for k, v in notes.items())
     return text
 
 

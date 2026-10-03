@@ -318,7 +318,12 @@ async def test_a_google_sign_in_completes_through_the_loopback(store, monkeypatc
             200, json={"access_token": "ya29", "refresh_token": "r1", "expires_in": 3599}
         )
     )
-    connections = Connections(["gmail"], store=store, environ={})
+    # After the sign-in, one read from each Google API the server calls.
+    labels = respx.get(host="gmail.googleapis.com").mock(
+        return_value=httpx.Response(200, json={"labels": []})
+    )
+    # The grant reaches the Google packs through the environment they read.
+    connections = Connections(["gmail"], store=store, environ=os.environ)
     asked = []
 
     def browser(url):  # the user approves; Google redirects back to the loopback
@@ -341,10 +346,101 @@ async def test_a_google_sign_in_completes_through_the_loopback(store, monkeypatc
     query = asked[0]
     assert query["client_id"] == ["users-own-client"]
     assert query["access_type"] == ["offline"] and query["code_challenge_method"] == ["S256"]
-    form = parse_qs(token.calls.last.request.content.decode())
+    form = parse_qs(token.calls[0].request.content.decode())  # the code exchange
     assert form["client_secret"] == ["users-own-secret"] and form["code_verifier"]
+    assert labels.called  # the grant was used once before it was kept
     stored = json.loads(store.get("google"))
     assert stored["client_id"] == "users-own-client" and stored["refresh_token"] == "r1"
+
+
+def _approving_browser(code="c0de"):
+    """The person signs in and approves: Google redirects back to the loopback."""
+
+    def browser(url):
+        state = parse_qs(urlparse(url).query)["state"][0]
+        asyncio.get_running_loop().create_task(
+            _get(f"{LOOPBACK_REDIRECT}?code={code}&state={state}")
+        )
+
+    return browser
+
+
+@respx.mock
+async def test_a_google_api_left_off_is_said_and_the_sign_in_kept(
+    store, monkeypatch, no_google_grant
+):
+    # The commonest first-run failure: the grant is good, and the Calendar API was
+    # never turned on in the person's Cloud project. Say so with the link, and keep
+    # the grant, so turning the API on is all that is left to do.
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "users-own-client")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "users-own-secret")
+    respx.route(host="127.0.0.1").pass_through()
+    respx.post("https://oauth2.googleapis.com/token").mock(
+        return_value=httpx.Response(
+            200, json={"access_token": "ya29", "refresh_token": "r1", "expires_in": 3599}
+        )
+    )
+    respx.get(host="www.googleapis.com").mock(
+        return_value=httpx.Response(
+            403,
+            json={
+                "error": {
+                    "code": 403,
+                    "message": "Google Calendar API has not been used in project 1 before or it is disabled.",
+                    "status": "PERMISSION_DENIED",
+                    "details": [{"reason": "SERVICE_DISABLED"}],
+                }
+            },
+        )
+    )
+    # Sheets reads nothing without an ID, so it is asked for one that cannot exist.
+    sheets = respx.get(host="sheets.googleapis.com").mock(
+        return_value=httpx.Response(404, json={"error": {"code": 404, "status": "NOT_FOUND"}})
+    )
+    connections = Connections(["gcalendar", "gsheets"], store=store, environ=os.environ)
+    said = []
+    code = await login(
+        connections,
+        ["google"],
+        command="x",
+        open_browser=_approving_browser(),
+        say=said.append,
+        interactive=True,
+    )
+    assert code == 0 and json.loads(store.get("google"))["refresh_token"] == "r1"
+    assert sheets.called
+    off = [line for line in said if "turned off" in line]
+    assert len(off) == 1 and "Google Calendar API" in off[0]
+    assert "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" in off[0]
+
+
+@respx.mock
+async def test_a_google_grant_refused_at_the_check_is_not_kept(store, monkeypatch, no_google_grant):
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "users-own-client")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "users-own-secret")
+    respx.route(host="127.0.0.1").pass_through()
+
+    def token(request):  # the code exchange succeeds; the first refresh is refused
+        if b"grant_type=authorization_code" in request.content:
+            # A refresh token of its own: Charter keeps access tokens per grant.
+            return httpx.Response(
+                200, json={"access_token": "ya29", "refresh_token": "r-revoked", "expires_in": 3599}
+            )
+        return httpx.Response(400, json={"error": "invalid_grant"})
+
+    respx.post("https://oauth2.googleapis.com/token").mock(side_effect=token)
+    connections = Connections(["gmail"], store=store, environ=os.environ)
+    said = []
+    code = await login(
+        connections,
+        ["google"],
+        command="x",
+        open_browser=_approving_browser(),
+        say=said.append,
+        interactive=True,
+    )
+    assert code == 1 and store.get("google") is None
+    assert any("Not connected: Google did not accept the sign-in" in line for line in said)
 
 
 async def test_the_loopback_closes_with_the_browser_s_spare_connection_open():

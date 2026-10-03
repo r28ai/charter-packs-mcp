@@ -344,9 +344,11 @@ def readme(family: Family, listing: Listing) -> str:
         "",
         "## Other clients",
         "",
-        "**Claude Desktop**: install the `.mcpb` from the "
-        f"[latest release](https://github.com/{GITHUB_ORG}/{pkg}/releases/latest). Claude "
-        "asks for any keys in its own settings and keeps them in your keychain.",
+        "**Claude Desktop**: install [uv](https://docs.astral.sh/uv/getting-started/installation/) "
+        "if you have not, since Claude Desktop starts the server with it, then open the "
+        f"`.mcpb` from the [latest release](https://github.com/{GITHUB_ORG}/{pkg}/releases/latest). "
+        "Claude asks for any keys in its own settings and keeps them in your keychain. The "
+        "first start takes a few seconds longer, while uv installs it.",
         "",
         "**VS Code** (`.vscode/mcp.json`): VS Code asks for each key the first time the "
         "server starts and stores it securely. Leave out any you stored with `login`.",
