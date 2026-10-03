@@ -323,17 +323,23 @@ def readme(family: Family, listing: Listing) -> str:
         json.dumps(vscode, indent=2),
         "```",
         "",
-        "**Cursor** (`.cursor/mcp.json`) and **Codex** (`~/.codex/config.toml`) start it the "
-        "same way:",
+        "**Cursor** (`.cursor/mcp.json`) starts it the same way:",
         "",
         "```json",
         json.dumps({"mcpServers": {key: {"command": "uvx", "args": [pkg]}}}, indent=2),
         "```",
         "",
+        "**Codex** (`~/.codex/config.toml`) starts a turn without waiting for a server's "
+        "tools unless told to, and then the agent has none of them. "
+        '`startup_readiness = "catalog"` makes it wait, and the longer timeout covers the '
+        "first run, when `uvx` installs the package:",
+        "",
         "```toml",
         f"[mcp_servers.{key}]",
         'command = "uvx"',
         f'args = ["{pkg}"]',
+        'startup_readiness = "catalog"',
+        "startup_timeout_sec = 60",
         "```",
         "",
         f"Name the server `{key}`. A host builds each tool's name from that key, and "

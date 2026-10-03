@@ -13,7 +13,8 @@ Two entry points share everything below:
   get one and where it goes — it never asks for one, because a key typed into a
   chat is a key in a transcript. For Google, once the person's own OAuth client
   is set, it starts the browser sign-in and returns at once; the sign-in
-  finishes in the background and the next call picks it up.
+  finishes in the background and the next call picks it up. Where every app
+  stands is ``connection_status``, which changes nothing and is marked so.
 
 Every credential is checked with one read-only call to its own API before it is
 stored, so a wrong key is caught here rather than on the first real call.
@@ -36,7 +37,15 @@ from charter.auth import AuthorizationRequest, OAuth2Flow, states_match
 from charter_families.apps import APPS, LOOPBACK_PORT, LOOPBACK_REDIRECT, App
 from charter_families.connections import Connections
 
-__all__ = ["ConnectTool", "SetupPrompt", "how_to_connect", "login", "status_text"]
+__all__ = [
+    "ConnectTool",
+    "SetupPrompt",
+    "StatusTool",
+    "how_to_connect",
+    "login",
+    "status_report",
+    "status_text",
+]
 
 # Google answers a client that does not accept the loopback redirect on its own
 # page, so the callback never comes. A Desktop app client accepts it; a Web
@@ -354,7 +363,12 @@ async def _login_one(
 
 @dataclass
 class ConnectTool:
-    """The ``connect`` tool: what is connected, or start connecting one app."""
+    """The ``connect`` tool: start connecting one app.
+
+    Not read-only, because for Google it starts a sign-in that stores a credential.
+    Where each app stands is :class:`StatusTool`'s, which is read-only, so a client
+    that refuses every other tool without asking — ``codex exec`` — can still see it.
+    """
 
     connections: Connections
     command: str
@@ -364,16 +378,17 @@ class ConnectTool:
 
     def __post_init__(self) -> None:
         self._tasks: Set[asyncio.Task[None]] = set()
-        self._errors: Dict[str, str] = {}
+        # Sign-ins that failed in the background, by app, for the status to report.
+        self.errors: Dict[str, str] = {}
 
     @property
     def description(self) -> str:
         return (
-            "See which apps this server is connected to, or connect one. With no `app`, "
-            "reports each app's state. With an `app`, says where to get its key and the "
-            "command that stores it — or, for Google once the user's own OAuth client is set, "
-            "starts the browser sign-in and returns at once: the user approves in the browser "
-            "and the next call works. Never ask the user for a key in the chat."
+            "Connect one app this server uses. For an app that issues keys, says where to "
+            "get one and the terminal command that stores it. For Google, once the user's "
+            "own OAuth client is set, starts the browser sign-in and returns at once: the "
+            "user approves in the browser and the next call works. To see which apps are "
+            "connected, call `connection_status`. Never ask the user for a key in the chat."
         )
 
     @property
@@ -384,22 +399,18 @@ class ConnectTool:
                 "app": {
                     "type": "string",
                     "enum": [a.key for a in self.connections.apps],
-                    "description": "The app to connect. Leave out to see where each one stands.",
+                    "description": "The app to connect.",
                 }
             },
+            "required": ["app"],
             "additionalProperties": False,
         }
 
     async def call(self, arguments: Mapping[str, Any]) -> str:
         self.connections.load()
         key = arguments.get("app")
-        if not key:
-            text = status_text(self.connections, self.command)
-            if self._errors:
-                text += "\nLast sign-in errors: " + "; ".join(
-                    f"{k}: {v}" for k, v in self._errors.items()
-                )
-            return text
+        if not key:  # the schema requires one; answer with the status rather than fail
+            return status_report(self.connections, self.command, self.errors)
         if key not in {a.key for a in self.connections.apps}:
             return f"This server does not use {key!r}."
         app = APPS[key]
@@ -409,7 +420,7 @@ class ConnectTool:
         if app.sign_in is None or not (cid and secret):
             note = f" {app.note}" if app.note else ""
             return f"{app.name} {how_to_connect(app, self.command)}.{note}"
-        self._errors.pop(key, None)
+        self.errors.pop(key, None)
         opened: List[str] = []
         self._spawn(
             key,
@@ -424,8 +435,8 @@ class ConnectTool:
             ),
         )
         await asyncio.sleep(0.2)  # long enough for the listener to bind and the URL to be built
-        if key in self._errors:
-            return f"{app.name} sign-in could not start: {self._errors[key]}"
+        if key in self.errors:
+            return f"{app.name} sign-in could not start: {self.errors[key]}"
         url = opened[0].rsplit("\n", 1)[-1] if opened else ""
         return (
             f"Opened the {app.name} sign-in in the user's browser. Once they approve, "
@@ -437,12 +448,47 @@ class ConnectTool:
         async def run() -> None:
             try:
                 await coro
-            except Exception as exc:  # reported on the next `connect` call
-                self._errors[key] = str(exc)
+            except Exception as exc:  # reported by `connection_status`
+                self.errors[key] = str(exc)
 
         task = asyncio.get_running_loop().create_task(run())
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+
+@dataclass
+class StatusTool:
+    """The ``connection_status`` tool: which apps are connected, and how to connect the rest.
+
+    Read-only, so every client runs it without asking. It is the same report the
+    server opens with, read again, plus any sign-in that failed in the background.
+    """
+
+    connections: Connections
+    command: str
+    connect: ConnectTool
+    name: str = "connection_status"
+    read_only: bool = True
+    description: str = (
+        "See which apps this server is connected to, and how to connect each one that "
+        "is not. Changes nothing."
+    )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {"type": "object", "properties": {}, "additionalProperties": False}
+
+    async def call(self, arguments: Mapping[str, Any]) -> str:
+        self.connections.load()
+        return status_report(self.connections, self.command, self.connect.errors)
+
+
+def status_report(connections: Connections, command: str, errors: Mapping[str, str]) -> str:
+    """:func:`status_text`, plus the sign-ins that failed since it was last read."""
+    text = status_text(connections, command)
+    if errors:
+        text += "\nLast sign-in errors: " + "; ".join(f"{k}: {v}" for k, v in errors.items())
+    return text
 
 
 @dataclass(frozen=True)
@@ -457,13 +503,13 @@ class SetupPrompt:
     def render(self, details: str = "") -> str:
         text = (
             "Help me connect the apps this server uses.\n\n"
-            "1. Call the `connect` tool with no arguments to see what is connected.\n"
+            "1. Call `connection_status` to see what is connected.\n"
             "2. For each app it lists as not connected, call `connect` with that app. Where that "
             "opens a browser sign-in, tell me to approve it, then move on.\n"
             "3. Where an app needs a key, tell me the page to get it from and the exact command "
             f"to run in my terminal (`{self.command} login <app>`). Do not ask me to paste a "
             "key into this chat.\n"
-            "4. Call `connect` with no arguments again and tell me what is still missing."
+            "4. Call `connection_status` again and tell me what is still missing."
         )
         if details.strip():
             text += f"\n\nContext from me: {details.strip()}"

@@ -19,7 +19,7 @@ from charter_families import FAMILIES, _session, tools_for
 from charter_families.apps import APPS, LOOPBACK_REDIRECT
 from charter_families.connections import Connections
 from charter_families.keychain import FileStore, open_store
-from charter_families.signin import ConnectTool, SetupPrompt, login, status_text
+from charter_families.signin import ConnectTool, SetupPrompt, StatusTool, login, status_text
 
 
 @pytest.fixture(autouse=True)
@@ -253,23 +253,43 @@ def test_the_opening_status_says_how_to_connect_and_forbids_keys_in_chat(store):
 
 def test_the_setup_prompt_sends_keys_to_the_terminal():
     text = SetupPrompt("uvx support-inbox-mcp").render()
+    assert "`connection_status`" in text
     assert "`uvx support-inbox-mcp login <app>`" in text
     assert "Do not ask me to paste a key" in text
 
 
-async def test_the_server_carries_instructions_and_the_connect_tool(store):
+async def test_the_server_carries_instructions_and_both_connection_tools(store):
+    """`connection_status` is read-only and `connect` is not.
+
+    `codex exec` refuses every tool not marked read-only, so while the status came
+    from `connect` with no arguments, a Codex agent could not see it at all.
+    """
     pytest.importorskip("mcp", reason="needs the [mcp] extra")
     _unconfigure("stripe")
     from charter.adapters.mcp import build_server
 
     connections = Connections(["stripe"], store=store, environ={})
-    tool = ConnectTool(connections, "uvx x")
+    connect = ConnectTool(connections, "uvx x")
     server = build_server(
-        [], name="t", instructions="status here", local_tools=[tool], prompts=[SetupPrompt("uvx x")]
+        [],
+        name="t",
+        instructions="status here",
+        local_tools=[connect, StatusTool(connections, "uvx x", connect)],
+        prompts=[SetupPrompt("uvx x")],
     )
     assert server.instructions == "status here"
     listed = {t.name: t for t in await server.list_tools()}
+    assert listed["connection_status"].annotations.read_only_hint is True
     assert listed["connect"].annotations.read_only_hint is False
-    result = await server.call_tool("connect", {})
-    assert "Stripe" in result.content[0].text
+    assert listed["connect"].input_schema["required"] == ["app"]
+    result = await server.call_tool("connection_status", {})
+    assert "Stripe: needs a key from" in result.content[0].text
     assert [p.name for p in await server.list_prompts()] == ["setup"]
+
+
+async def test_the_status_reports_a_sign_in_that_failed_in_the_background(store):
+    connections = Connections(["stripe"], store=store, environ={})
+    connect = ConnectTool(connections, "uvx x")
+    connect.errors["google"] = "no answer from the browser"
+    reply = await StatusTool(connections, "uvx x", connect).call({})
+    assert "Last sign-in errors: google: no answer from the browser" in reply

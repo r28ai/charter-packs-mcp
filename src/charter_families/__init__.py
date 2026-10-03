@@ -94,9 +94,9 @@ class Workflow:
         lines += [f"{i}. `{step.replace('.', '_', 1)}`" for i, step in enumerate(self.steps, 1)]
         lines += [
             "",
-            "Before anything else, check whether this server lists any of these tools' "
-            "apps as not connected. If it does, tell me how to connect them first, "
-            "before asking me for anything.",
+            "Before anything else, check whether any of these tools' apps is not "
+            "connected: the server's instructions say, and so does `connection_status`. "
+            "If one is not, tell me how to connect it first, before asking me for anything.",
             "Read before you write. Before any call that creates, sends, changes or "
             "deletes something, show me what it will do and wait for my go-ahead, "
             "unless I have told you to go ahead without asking.",
@@ -307,9 +307,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     from charter.adapters.mcp import serve
 
-    from charter_families.signin import ConnectTool, SetupPrompt, status_text
+    from charter_families.signin import ConnectTool, SetupPrompt, StatusTool, status_text
 
     workflows = workflows_for(families)
+    connect = ConnectTool(connections, command)
     name = args.name or "-".join(family.key for family in families)
     print(
         f"charter: serving {len(tools)} tools and {len(workflows)} workflows from "
@@ -321,6 +322,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         name=name,
         prompts=[SetupPrompt(command), *workflows],
         instructions=status_text(connections, command),
-        local_tools=[ConnectTool(connections, command)],
+        local_tools=[connect, StatusTool(connections, command, connect)],
     )
     return 0
