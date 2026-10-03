@@ -17,8 +17,13 @@ Usage::
 
 Nothing is published. Each directory is ready for ``git init`` and a push to
 ``github.com/r28ai/<package>``. Nothing here goes to PyPI: a family installs from
-its repository, and depends on ``charter-families`` by its repository too. Only
-Charter itself, and the libraries it needs, come from PyPI.
+a wheel attached to its repository's GitHub release, and depends on
+``charter-families`` by the wheel on that repository's release. Only Charter
+itself, and the libraries it needs, come from PyPI. No git is needed to install,
+which Windows and a Mac without the developer tools lack, and nothing is built.
+
+``--wheels-from URL`` points every one of those downloads at one place instead,
+for a dry run: a local HTTP server, or a scratch release, holding the same wheels.
 """
 
 from __future__ import annotations
@@ -41,13 +46,31 @@ ROOT = Path(__file__).resolve().parent.parent
 
 VERSION = "0.1.0"
 GITHUB_ORG = "r28ai"
-# Each family package depends on the engine, by its repository and a tag, and
-# the engine on Charter from PyPI. A tag rather than the default branch, so a
-# family installed today keeps working when the engine moves on.
-FAMILIES_REQUIREMENT = (
-    f"charter-families @ git+https://github.com/{GITHUB_ORG}/charter-families@v{VERSION}"
-)
 DOCS = "https://docs.r28.ai/charter"
+# Who may claim the listings Glama makes of these repositories: a repository
+# owned by an organization can only be claimed by a user named in its glama.json.
+GLAMA_MAINTAINERS = ["nathanqueme"]
+# Set by --wheels-from: one place every wheel downloads from, for a dry run.
+WHEELS_FROM = ""
+
+
+def wheel(dist: str) -> str:
+    """The wheel `uv build` makes of a pure-Python distribution at VERSION."""
+    return f"{dist.replace('-', '_')}-{VERSION}-py3-none-any.whl"
+
+
+def download(repo: str, asset: str) -> str:
+    """Where `asset` downloads from: the repository's release for VERSION."""
+    base = WHEELS_FROM or f"https://github.com/{GITHUB_ORG}/{repo}/releases/download/v{VERSION}"
+    return f"{base}/{asset}"
+
+
+def families_requirement() -> str:
+    # Each family depends on the engine by the wheel on its tagged release, and the
+    # engine on Charter from PyPI. A release rather than the default branch, so a
+    # family installed today keeps working when the engine moves on, and a wheel
+    # rather than `git+`, so installing needs no git.
+    return f"charter-families @ {download('charter-families', wheel('charter-families'))}"
 
 
 @dataclass(frozen=True)
@@ -230,14 +253,16 @@ def readme(family: Family, listing: Listing) -> str:
         f"{len(tools)} tools it needs and no others.",
         "",
         "```bash",
-        f"uv tool install git+https://github.com/{GITHUB_ORG}/{pkg}",
+        f"uv tool install {download(pkg, wheel(pkg))}",
         f"claude mcp add {key} -- {pkg}",
         "```",
         "",
-        "It installs from this repository with [uv](https://docs.astral.sh/uv/); nothing but "
-        "Charter and the libraries it uses comes from PyPI. `uv tool upgrade " + pkg + "` "
-        "updates it. If a desktop app cannot find `" + pkg + "`, give it the full path "
-        "from `which " + pkg + "`.",
+        "It installs with [uv](https://docs.astral.sh/uv/) from this repository's release, "
+        "with no git and nothing to build; nothing but Charter and the libraries it uses "
+        "comes from PyPI. To update, run the install line from the "
+        f"[latest release](https://github.com/{GITHUB_ORG}/{pkg}/releases/latest). If a "
+        f"desktop app cannot find `{pkg}`, give it the full path from `which {pkg}` "
+        f"(`where {pkg}` on Windows).",
         "",
         f"Then ask your agent to **connect your apps**, or run `/mcp__{key}__setup`.",
         "",
@@ -477,7 +502,7 @@ def pyproject(family: Family, listing: Listing) -> str:
             'requires-python = ">=3.10"',
             'authors = [{ name = "R28 AI, Inc.", email = "oss@r28.ai" }]',
             "keywords = [" + ", ".join(json.dumps(k) for k in keywords) + "]",
-            f'dependencies = ["{FAMILIES_REQUIREMENT}"]',
+            f'dependencies = ["{families_requirement()}"]',
             "",
             "[project.urls]",
             f'Repository = "https://github.com/{GITHUB_ORG}/{listing.package}"',
@@ -488,7 +513,7 @@ def pyproject(family: Family, listing: Listing) -> str:
             f'{listing.package} = "{module_name(listing)}:main"',
             "",
             "[tool.hatch.metadata]",
-            "# charter-families is a dependency by its GitHub URL, not a PyPI name.",
+            "# charter-families is a dependency by its GitHub release's wheel, not a PyPI name.",
             "allow-direct-references = true",
             "",
             "[tool.hatch.build.targets.wheel]",
@@ -570,21 +595,47 @@ def index() -> str:
         "",
         "## Publishing one",
         "",
-        "Only Charter is on PyPI. Every family installs from its GitHub repository and",
-        "depends on `charter-families` by its repository and tag:",
+        "Only Charter is on PyPI. Every family installs from a wheel on its GitHub release",
+        "and depends on `charter-families` by the wheel on that repository's release, so",
+        "installing needs no git. `release.sh` does all of it:",
         "",
-        "1. Release Charter 0.3.0 to PyPI (MCP prompts and instructions).",
-        f"2. Push `charter-families` to `github.com/{GITHUB_ORG}/charter-families` and tag it",
-        f"   `v{VERSION}`; every family depends on `{FAMILIES_REQUIREMENT}`.",
-        f"3. `cd <dir> && git init && gh repo create {GITHUB_ORG}/<dir> --public --source . --push`",
-        f"4. Check it from a clean machine: `uv tool install git+https://github.com/{GITHUB_ORG}/<dir>`.",
-        "5. `npx @anthropic-ai/mcpb pack` and attach the `.mcpb` to a GitHub release, for",
-        "   Claude Desktop.",
-        "6. Submit the repository to the directories that index by repo: Smithery, Glama,",
-        "   PulseMCP, mcp.so, and a PR to awesome-mcp-servers.",
+        "1. Release Charter to PyPI.",
+        f"2. Push `charter-families` to `github.com/{GITHUB_ORG}/charter-families`, tag it",
+        f"   `v{VERSION}` and attach its wheel to that release; every family depends on",
+        f"   `{families_requirement()}`.",
+        f"3. Push each `<dir>` to `github.com/{GITHUB_ORG}/<dir>` with a `v{VERSION}` release",
+        "   holding its wheel and its `.mcpb` (`npx @anthropic-ai/mcpb pack`), for Claude Desktop.",
+        "4. Check it from a clean machine with no git: `uv tool install <the wheel's URL>`.",
+        "5. Smithery: `smithery mcp publish <dir>.mcpb -n <namespace>/<dir>`. Glama indexes",
+        "   the repository; each one's `glama.json` names who may claim it.",
         "",
     ]
     return "\n".join(lines)
+
+
+def glama_json() -> str:
+    doc = {"$schema": "https://glama.ai/mcp/schemas/server.json", "maintainers": GLAMA_MAINTAINERS}
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def dockerfile(listing: Listing) -> str:
+    pkg = listing.package
+    return "\n".join(
+        [
+            "# Glama starts the server in this image to list its tools and prompts. People",
+            "# install it with uv instead (see the README); nothing here is needed for that.",
+            "FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim",
+            f"RUN uv tool install {download(pkg, wheel(pkg))}",
+            'ENV PATH="/root/.local/bin:$PATH"',
+            f'ENTRYPOINT ["{pkg}"]',
+            "",
+        ]
+    )
+
+
+# Left out of the Claude Desktop bundle: what is only for directories, and what
+# `uv run` may have left beside the source.
+MCPBIGNORE = "Dockerfile\nglama.json\n.venv/\n__pycache__/\n"
 
 
 def write(out: Path) -> List[Path]:
@@ -604,15 +655,18 @@ def write(out: Path) -> List[Path]:
             base / "src" / "server.py": server_py(listing),
             src / "__init__.py": package_init(family, listing),
             src / "__main__.py": package_main(listing),
+            base / "glama.json": glama_json(),
+            base / "Dockerfile": dockerfile(listing),
+            base / ".mcpbignore": MCPBIGNORE,
         }
         for path, text in files.items():
-            path.write_text(text)
+            path.write_text(text, encoding="utf-8")
             written.append(path)
         # A PyPI registry entry from before families installed from GitHub.
         (base / "server.json").unlink(missing_ok=True)
         shutil.copyfile(ROOT / "LICENSE", base / "LICENSE")
         written.append(base / "LICENSE")
-    (out / "README.md").write_text(index())
+    (out / "README.md").write_text(index(), encoding="utf-8")
     written.append(out / "README.md")
     return written
 
@@ -620,7 +674,15 @@ def write(out: Path) -> List[Path]:
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, default=ROOT.parent / "charter-mcp-families")
+    parser.add_argument(
+        "--wheels-from",
+        default="",
+        help="Download every wheel from this URL instead of each repository's release: "
+        "a dry run against a local server or a scratch release holding the same wheels.",
+    )
     args = parser.parse_args(argv)
+    global WHEELS_FROM
+    WHEELS_FROM = args.wheels_from.rstrip("/")
     missing = set(FAMILIES) ^ set(LISTINGS)
     if missing:
         print(f"families and listings disagree: {sorted(missing)}", file=sys.stderr)

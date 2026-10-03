@@ -29,6 +29,52 @@ jobs:
       - name: Pytest
         run: uv run --no-sync pytest -q
 
+  # What a user without git gets: the wheels a release attaches, served from the
+  # runner, installed and started both ways a client starts them, git off the PATH.
+  no-git:
+    name: install without git (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        run: |
+          uv venv --python 3.13
+          uv pip install -e .
+      - name: Build what a release attaches, and serve it
+        shell: bash
+        run: |
+          uv build --wheel --out-dir dist .
+          uv run --no-sync python scripts/generate.py --wheels-from http://127.0.0.1:8765 --out gen
+          uv build --wheel --out-dir dist gen/github-linear-mcp
+          ls dist
+      - name: Install and talk to it with no git
+        shell: bash
+        run: |
+          uv run --no-sync python -m http.server 8765 --bind 127.0.0.1 --directory dist &
+          sleep 3
+          uv run --no-sync python scripts/no_git_check.py \
+            http://127.0.0.1:8765/github_linear_mcp-0.1.0-py3-none-any.whl gen/github-linear-mcp
+      - name: Glama's image starts and answers
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # The server from the step before is still up.
+          curl -sf -o /dev/null http://127.0.0.1:8765/ || {
+            uv run --no-sync python -m http.server 8765 --bind 127.0.0.1 --directory dist & sleep 3; }
+          docker build --network host -t glama-check gen/github-linear-mcp
+          uv run --no-sync python - <<'EOF'
+          import asyncio, os, sys
+          sys.path.insert(0, "scripts")
+          from no_git_check import talk
+          print(asyncio.run(talk("docker", ["run", "-i", "--rm", "glama-check"], dict(os.environ))))
+          EOF
+
   # The tests fake each keychain. This is each real one: what `login` stores, read
   # back by another process, then forgotten by a third.
   keychain:
