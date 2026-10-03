@@ -29,10 +29,11 @@ from __future__ import annotations
 import argparse
 import importlib
 import io
+import os
 import re
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, MutableMapping, Optional, Sequence, Tuple
 
 from charter import Tool
 
@@ -257,9 +258,32 @@ def _utf8_output() -> None:
             stream.reconfigure(encoding="utf-8")
 
 
+def _drop_unfilled_placeholders(environ: MutableMapping[str, str]) -> List[str]:
+    """Unset each app variable a client passed as an unfilled ``${...}`` placeholder.
+
+    Claude Desktop hands a bundle's optional settings to the server as, literally,
+    ``${user_config.github_token}`` when the person leaves them empty. As a value it
+    won over the keychain: every app read as connected, and GitHub answered "Bad
+    credentials" to a token nobody had set. Runs before any pack is imported,
+    since some read their variables at import.
+    """
+    from charter_families.apps import APPS
+
+    names = sorted({f.env for app in APPS.values() for f in app.fields})
+    dropped = [n for n in names if re.fullmatch(r"\$\{[^}]*\}", environ.get(n, ""))]
+    for name in dropped:
+        del environ[name]
+    if dropped:
+        print(
+            f"charter: ignoring {', '.join(dropped)}, left unfilled by the client", file=sys.stderr
+        )
+    return dropped
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Serve families over MCP (stdio), or connect the apps they use."""
     _utf8_output()
+    _drop_unfilled_placeholders(os.environ)
     parser = argparse.ArgumentParser(
         prog="python -m charter_families",
         description="Serve Charter families over the Model Context Protocol (stdio), "

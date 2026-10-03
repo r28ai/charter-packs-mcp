@@ -429,6 +429,9 @@ def manifest(family: Family, listing: Listing) -> str:
             ),
             "sensitive": f.secret,
             "required": False,
+            # Left empty, Claude Desktop passed the placeholder itself as the value;
+            # the server ignores one, and a default gives clients that use it "".
+            "default": "",
         }
         for a, f in fields
     }

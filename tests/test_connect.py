@@ -188,6 +188,27 @@ def test_status_prints_to_a_windows_pipe(tmp_path, monkeypatch):
     assert "Settings → Connectors" in out.buffer.getvalue().decode("utf-8")
 
 
+def test_unfilled_placeholders_are_not_credentials(tmp_path, monkeypatch, capsys):
+    # What Claude Desktop passed for every key left empty in the bundle's settings.
+    # Taken as values, they won over the keychain: every app read as connected,
+    # and GitHub answered "Bad credentials" to "${user_config.github_token}".
+    _unconfigure("github", "linear")
+    monkeypatch.setenv("GITHUB_TOKEN", "${user_config.github_token}")
+    monkeypatch.setenv("LINEAR_API_KEY", "${user_config.linear_api_key}")
+    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_real")  # a real value is left alone
+    monkeypatch.setenv("CHARTER_CREDENTIALS_FILE", str(tmp_path / "c.json"))
+    FileStore(tmp_path / "c.json").set(
+        "github", json.dumps({"type": "key", "values": {"GITHUB_TOKEN": "ghp_stored"}})
+    )
+    assert main(["engineering", "status"]) == 0
+    out = capsys.readouterr()
+    assert "GITHUB_TOKEN" not in os.environ and "LINEAR_API_KEY" not in os.environ
+    assert os.environ["STRIPE_API_KEY"] == "sk_test_real"
+    connected = next(line for line in out.out.splitlines() if line.startswith("Connected:"))
+    assert "GitHub" in connected and "Linear" not in connected  # GitHub from the keychain
+    assert "left unfilled by the client" in out.err
+
+
 def test_every_family_s_google_grant_fits_one_windows_credential():
     # Credential Manager keeps 2,560 bytes of UTF-16 per entry. Google allows a
     # refresh token up to 512 bytes; the client ID and secret are the lengths
