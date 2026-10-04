@@ -458,7 +458,10 @@ def manifest(family: Family, listing: Listing) -> str:
                 },
             },
         },
-        # The server offers these itself; the manifest lists them for the directory.
+        # The server offers these itself; the manifest lists them for the directories.
+        # Smithery's page shows the tools named here and no others, so without
+        # them a listing read "0 tools" — and the tool names are what people search.
+        "tools": manifest_tools(family),
         "prompts": [
             {
                 "name": "setup",
@@ -470,6 +473,28 @@ def manifest(family: Family, listing: Listing) -> str:
         "user_config": user_config,
     }
     return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+
+
+# The two tools every family server adds to its packs' own.
+LOCAL_TOOLS = [
+    (
+        "connection_status",
+        "Which apps this server can reach, and how to connect the rest. Changes nothing.",
+    ),
+    ("connect", "Connect one app: where to get its key, or the Google sign-in in the browser."),
+]
+
+
+def manifest_tools(family: Family) -> List[Dict[str, str]]:
+    """Each tool as the server names it, with the first sentence of its description."""
+    from charter.session import ToolSession
+
+    visible = ToolSession(family.tools(), progressive=False).visible()
+    tools = [
+        {"name": name, "description": tool.description.split(". ")[0].rstrip(".") + "."}
+        for name, tool in visible.items()
+    ]
+    return tools + [{"name": n, "description": d} for n, d in LOCAL_TOOLS]
 
 
 def server_py(listing: Listing) -> str:
