@@ -41,7 +41,11 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+      # No cache: the check installs without one on purpose, and pruning it after
+      # the job failed while the file server below still held it.
       - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
       - name: Install
         run: |
           uv venv --python 3.13
