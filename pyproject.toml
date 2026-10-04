@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "charter-packs-mcp"
 version = "0.1.0"
-description = "Cross-app agent workflows over Charter's packs, served as MCP servers, on the user's own keys."
+description = "Charter packs, served over MCP: the runtime behind R28's MCP servers, with their workflows and a keychain login."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
