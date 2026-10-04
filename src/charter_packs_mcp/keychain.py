@@ -20,7 +20,7 @@ Windows Credential Manager holds at most 2,560 bytes per entry, stored as UTF-16
 scope a family asks for, is about 720; ``tests/test_connect.py`` keeps it under.
 
 Nothing here is read by the library's core. A pack still reads its environment
-variables and its ``configure()``; this store is what :mod:`charter_families`
+variables and its ``configure()``; this store is what :mod:`charter_packs_mcp`
 fills those from when neither was set.
 """
 

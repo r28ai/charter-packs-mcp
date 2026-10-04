@@ -7,7 +7,7 @@ import re
 import pytest
 from charter import schema_tokens
 
-from charter_families import FAMILIES, Workflow, resolve, tools_for, workflows_for
+from charter_packs_mcp import FAMILIES, Workflow, resolve, tools_for, workflows_for
 
 ALL = [workflow for family in FAMILIES.values() for workflow in family.workflows]
 

@@ -17,9 +17,6 @@ resolution-markers = [
     "(python_full_version < '3.11' and platform_machine != 'ARM64' and platform_machine != 'x86' and sys_platform == 'win32') or (python_full_version < '3.11' and platform_machine != 'x86_64' and sys_platform == 'darwin') or (python_full_version < '3.11' and sys_platform != 'darwin' and sys_platform != 'win32')",
 ]
 
-[manifest]
-overrides = [{ name = "charter-ai", extras = ["mcp"], editable = "../charter" }]
-
 [[package]]
 name = "annotated-types"
 version = "0.8.0"
@@ -191,10 +188,15 @@ wheels = [
 
 [[package]]
 name = "charter-ai"
-source = { editable = "../charter" }
+version = "0.3.1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4e/83/61c3a6db70d3461f55d3fb010f3529a9b72a78e35a4a373e9b0f8f1ad91b/charter_ai-0.3.1.tar.gz", hash = "sha256:080a67cf43fc3c1d764cd285b73767f035cc53a27e4c93c6a86a825f5f0da7f1", size = 1061409, upload-time = "2026-10-03T23:49:29.642Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5f/48/17e33ff3f1235c8984d00d9338fb1a7e5909a0dbdf4a74ce9bb11e556e6b/charter_ai-0.3.1-py3-none-any.whl", hash = "sha256:7fab711fda80bb2c299650f6b6559d2a8f9d83fb9129f4036d9ce6f86a29a58b", size = 830187, upload-time = "2026-10-03T23:49:27.893Z" },
 ]
 
 [package.optional-dependencies]
@@ -203,27 +205,8 @@ mcp = [
     { name = "mcp" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "cryptography", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin' and extra == 'mcp'", specifier = "<49" },
-    { name = "cryptography", marker = "platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'mcp'", specifier = "<46.0.4" },
-    { name = "cryptography", marker = "platform_machine == 'x86' and sys_platform == 'win32' and extra == 'mcp'", specifier = "<49" },
-    { name = "httpx", specifier = ">=0.27,<1" },
-    { name = "langchain", marker = "extra == 'dev'", specifier = ">=1.0" },
-    { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=0.3" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.0" },
-    { name = "pydantic", specifier = ">=2.9,<3" },
-    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.380" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
-    { name = "respx", marker = "extra == 'dev'", specifier = ">=0.21" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-    { name = "tomli", marker = "python_full_version < '3.11' and extra == 'dev'", specifier = ">=2.0" },
-]
-provides-extras = ["dev", "langchain", "mcp"]
-
 [[package]]
-name = "charter-families"
+name = "charter-packs-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -242,7 +225,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "charter-ai", extras = ["mcp"], editable = "../charter" },
+    { name = "charter-ai", extras = ["mcp"], specifier = ">=0.3.1,<0.4" },
     { name = "keyring", specifier = ">=24" },
 ]
 

@@ -29,7 +29,7 @@ from charter import CredentialError
 from charter.auth import StaticTokenProvider
 from charter.packs import is_configured
 
-from charter_families.apps import App, app_for_pack
+from charter_packs_mcp.apps import App, app_for_pack
 
 __all__ = ["Connections"]
 
@@ -68,7 +68,7 @@ class Connections:
     @property
     def store(self) -> Any:
         if self._store is None:
-            from charter_families.keychain import open_store
+            from charter_packs_mcp.keychain import open_store
 
             self._store = open_store()
         return self._store

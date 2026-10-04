@@ -19,18 +19,18 @@ import sys
 
 from charter import CredentialError
 
-from charter_families import FAMILIES, tools_for
-from charter_families.apps import APPS
-from charter_families.connections import Connections
-from charter_families.keychain import WINDOWS_ENTRY_LIMIT, open_store
-from charter_families.signin import google_scopes
+from charter_packs_mcp import FAMILIES, tools_for
+from charter_packs_mcp.apps import APPS
+from charter_packs_mcp.connections import Connections
+from charter_packs_mcp.keychain import WINDOWS_ENTRY_LIMIT, open_store
+from charter_packs_mcp.signin import google_scopes
 
 FAMILY = "support"  # nine Google scopes, the most any family asks for, and Linear's key
 
 
 def cli(*args: str) -> str:
     done = subprocess.run(
-        [sys.executable, "-m", "charter_families", FAMILY, *args],
+        [sys.executable, "-m", "charter_packs_mcp", FAMILY, *args],
         capture_output=True,
         text=True,
         encoding="utf-8",

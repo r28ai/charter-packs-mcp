@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, urlparse
 from charter import APIError, CharterError, CredentialError
 from charter.auth import AuthorizationRequest, OAuth2Flow, states_match
 
-from charter_families.apps import (
+from charter_packs_mcp.apps import (
     APPS,
     GOOGLE_CHECKS,
     LOOPBACK_PORT,
@@ -42,7 +42,7 @@ from charter_families.apps import (
     NO_SUCH_ID,
     App,
 )
-from charter_families.connections import Connections
+from charter_packs_mcp.connections import Connections
 
 __all__ = [
     "ConnectTool",
@@ -169,7 +169,7 @@ async def verify(
         return await _check_google(packs, granted)
     if app.check is None:
         return []
-    from charter_families import _tool
+    from charter_packs_mcp import _tool
 
     step, args = app.check
     try:
@@ -181,7 +181,7 @@ async def verify(
 
 async def _check_google(packs: Sequence[str], granted: Optional[Sequence[str]]) -> List[str]:
     """A read from each Google API the server calls, with the grant just made."""
-    from charter_families import _tool
+    from charter_packs_mcp import _tool
 
     notes: List[str] = []
     for pack in packs:
@@ -238,7 +238,7 @@ def google_scopes(packs: Sequence[str]) -> List[str]:
     """The scopes the Google tools this server serves declare — no wider consent than that."""
     from charter.auth import scopes_for
 
-    from charter_families import _module_tools
+    from charter_packs_mcp import _module_tools
 
     return scopes_for([t for p in packs if p in APPS["google"].packs for t in _module_tools(p)])
 

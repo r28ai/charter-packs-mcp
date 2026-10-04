@@ -17,11 +17,11 @@ import pytest
 import respx
 from charter import CredentialError
 
-from charter_families import FAMILIES, _session, main, tools_for
-from charter_families.apps import APPS, LOOPBACK_REDIRECT
-from charter_families.connections import Connections
-from charter_families.keychain import WINDOWS_ENTRY_LIMIT, FileStore, KeychainStore, open_store
-from charter_families.signin import (
+from charter_packs_mcp import FAMILIES, _session, main, tools_for
+from charter_packs_mcp.apps import APPS, LOOPBACK_REDIRECT
+from charter_packs_mcp.connections import Connections
+from charter_packs_mcp.keychain import WINDOWS_ENTRY_LIMIT, FileStore, KeychainStore, open_store
+from charter_packs_mcp.signin import (
     ConnectTool,
     Loopback,
     SetupPrompt,

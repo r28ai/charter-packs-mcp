@@ -10,9 +10,9 @@ Gmail, Stripe and Linear. Each family carries the workflows that justify its
 tools, and an MCP server built from one serves those workflows as prompts —
 which Claude Code lists as slash commands — beside exactly the tools they name.
 
-    python -m charter_families engineering            # serve
-    python -m charter_families support,finance        # two families, one server
-    python -m charter_families engineering login      # connect the apps it uses
+    python -m charter_packs_mcp engineering            # serve
+    python -m charter_packs_mcp support,finance        # two families, one server
+    python -m charter_packs_mcp engineering login      # connect the apps it uses
 
 Nothing here runs a workflow. A prompt is text the client's agent reads: it says
 which tools to call and in what order, and the agent decides what to repeat or
@@ -37,7 +37,7 @@ from typing import Any, Dict, Iterable, List, MutableMapping, Optional, Sequence
 
 from charter import Tool
 
-from charter_families.catalogue import CATALOGUE
+from charter_packs_mcp.catalogue import CATALOGUE
 
 __all__ = ["FAMILIES", "Family", "Workflow", "main", "resolve", "tools_for", "workflows_for"]
 
@@ -210,8 +210,8 @@ def _session(tools: List[Tool], connections: Any, command: str) -> Any:
     from charter import CredentialError
     from charter.session import ToolSession
 
-    from charter_families.apps import app_for_pack
-    from charter_families.signin import how_to_connect
+    from charter_packs_mcp.apps import app_for_pack
+    from charter_packs_mcp.signin import how_to_connect
 
     class FamilySession(ToolSession):
         async def dispatch(
@@ -278,7 +278,7 @@ def _drop_unfilled_placeholders(environ: MutableMapping[str, str]) -> List[str]:
     credentials" to a token nobody had set. Runs before any pack is imported,
     since some read their variables at import.
     """
-    from charter_families.apps import APPS
+    from charter_packs_mcp.apps import APPS
 
     names = sorted({f.env for app in APPS.values() for f in app.fields})
     dropped = [n for n in names if re.fullmatch(r"\$\{[^}]*\}", environ.get(n, ""))]
@@ -296,7 +296,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     _utf8_output()
     _drop_unfilled_placeholders(os.environ)
     parser = argparse.ArgumentParser(
-        prog="python -m charter_families",
+        prog="python -m charter_packs_mcp",
         description="Serve Charter families over the Model Context Protocol (stdio), "
         "or connect the apps they use.",
     )
@@ -319,7 +319,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--command",
         default=None,
         help="How users start this server, for the instructions it gives (default: "
-        "python -m charter_families <family>).",
+        "python -m charter_packs_mcp <family>).",
     )
     args = parser.parse_args(argv)
 
@@ -328,24 +328,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
-    from charter_families.connections import Connections
+    from charter_packs_mcp.connections import Connections
 
     tools = tools_for(families)
     packs: List[str] = []
     for tool in tools:
         if tool.pack and tool.pack not in packs:
             packs.append(tool.pack)
-    command = args.command or f"python -m charter_families {args.family}"
+    command = args.command or f"python -m charter_packs_mcp {args.family}"
     connections = Connections(packs)
     connections.load()
 
     if args.action == "status":
-        from charter_families.signin import status_text
+        from charter_packs_mcp.signin import status_text
 
         print(status_text(connections, command))
         return 0
     if args.action == "logout":
-        from charter_families.apps import APPS
+        from charter_packs_mcp.apps import APPS
 
         for key in args.apps or [a.key for a in connections.apps]:
             if key in APPS:
@@ -355,13 +355,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.action == "login":
         import asyncio
 
-        from charter_families.signin import login
+        from charter_packs_mcp.signin import login
 
         return asyncio.run(login(connections, args.apps, command=command))
 
     from charter.adapters.mcp import serve
 
-    from charter_families.signin import ConnectTool, SetupPrompt, StatusTool, status_text
+    from charter_packs_mcp.signin import ConnectTool, SetupPrompt, StatusTool, status_text
 
     workflows = workflows_for(families)
     connect = ConnectTool(connections, command)
